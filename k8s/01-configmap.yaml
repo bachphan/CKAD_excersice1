@@ -12,3 +12,6 @@ data:
   SEED_ON_START: "true"
   JWT_EXPIRES_IN: "24h"
   ADMIN_EMAIL: "admin@babymilk.local"
+  PGHOST: "postgres"
+  PGPORT: "5432"
+  PGUSER: "babymilk"

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, now } from '../db.js';
+import { query, now } from '../db.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { signToken } from '../lib/auth.js';
 import { validateBody } from '../lib/validate.js';
@@ -29,14 +29,16 @@ router.post('/register', async (req, res) => {
     fullName: { type: 'string', required: true, maxLen: 100 },
   });
   const email = d.email.toLowerCase();
-  if (db.prepare('SELECT id FROM users WHERE email = ?').get(email)) {
+  const existing = await query('SELECT id FROM users WHERE email = $1', [email]);
+  if (existing.rows[0]) {
     throw new ApiError(409, 'Email này đã được đăng ký');
   }
   const passwordHash = await hashPassword(d.password);
-  const info = db
-    .prepare("INSERT INTO users (email, password_hash, full_name, role, created_at) VALUES (?, ?, ?, 'customer', ?)")
-    .run(email, passwordHash, d.fullName, now());
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  const { rows } = await query(
+    "INSERT INTO users (email, password_hash, full_name, role, created_at) VALUES ($1, $2, $3, 'customer', $4) RETURNING *",
+    [email, passwordHash, d.fullName, now()]
+  );
+  const user = rows[0];
   res.status(201).json({ token: signToken(user), user: toApi(user) });
 });
 
@@ -46,7 +48,8 @@ router.post('/login', async (req, res) => {
     email: { type: 'string', required: true, maxLen: 200 },
     password: { type: 'string', required: true, maxLen: 100, noTrim: true },
   });
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(d.email.toLowerCase());
+  const { rows } = await query('SELECT * FROM users WHERE email = $1', [d.email.toLowerCase()]);
+  const user = rows[0];
   // Cùng một thông báo cho "sai email" và "sai mật khẩu" — không lộ email nào đã tồn tại.
   if (!user || !(await verifyPassword(d.password, user.password_hash))) {
     throw new ApiError(401, 'Email hoặc mật khẩu không đúng');

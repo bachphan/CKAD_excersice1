@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, now } from '../db.js';
+import { pool, now } from '../db.js';
 import { requireInternalKey } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 
@@ -31,33 +31,58 @@ function parseItems(body) {
   return [...merged].map(([productId, quantity]) => ({ productId, quantity }));
 }
 
-const getById = db.prepare('SELECT * FROM products WHERE id = ?');
-// Điều kiện stock >= ? lặp lại trong UPDATE để chống race (dù better-sqlite3 tx đã serialize).
-const decStock = db.prepare('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ? AND stock >= ?');
-const incStock = db.prepare('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?');
-
-// Kiểm tra + trừ tồn kho NGUYÊN TỬ cho cả đơn hàng: hoặc trừ hết, hoặc không trừ gì.
+// Kiểm tra + trừ tồn kho NGUYÊN TỬ cho cả đơn hàng: hoặc trừ hết, hoặc không trừ gì
+// (1 transaction Postgres thật, dùng client riêng từ pool + BEGIN/COMMIT/ROLLBACK).
 // Trả về snapshot giá/tên tại thời điểm checkout để order-service lưu vào đơn
 // (không tin giá do client gửi lên).
-const checkoutTx = db.transaction((items) => {
-  const lines = [];
-  for (const { productId, quantity } of items) {
-    const p = getById.get(productId);
-    if (!p) throw new StockError(`Sản phẩm #${productId} không tồn tại`, productId, 0);
-    if (p.stock < quantity) {
-      throw new StockError(`"${p.name}" chỉ còn ${p.stock} sản phẩm trong kho`, productId, p.stock);
+async function checkoutTx(items) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const lines = [];
+    for (const { productId, quantity } of items) {
+      // FOR UPDATE khoá dòng đang đọc — chống race condition khi 2 request checkout cùng lúc
+      // trên cùng 1 sản phẩm (tương đương vai trò serialize của better-sqlite3 transaction trước đây).
+      const { rows } = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [productId]);
+      const p = rows[0];
+      if (!p) throw new StockError(`Sản phẩm #${productId} không tồn tại`, productId, 0);
+      if (p.stock < quantity) {
+        throw new StockError(`"${p.name}" chỉ còn ${p.stock} sản phẩm trong kho`, productId, p.stock);
+      }
+      await client.query('UPDATE products SET stock = stock - $1, updated_at = $2 WHERE id = $3', [quantity, now(), productId]);
+      lines.push({ productId: p.id, name: p.name, unitPrice: p.price, quantity });
     }
-    decStock.run(quantity, now(), productId, quantity);
-    lines.push({ productId: p.id, name: p.name, unitPrice: p.price, quantity });
+    await client.query('COMMIT');
+    return lines;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
-  return lines;
-});
+}
+
+async function restockTx(items) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const { productId, quantity } of items) {
+      await client.query('UPDATE products SET stock = stock + $1, updated_at = $2 WHERE id = $3', [quantity, now(), productId]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 // POST /internal/checkout  { items: [{productId, quantity}] }
-router.post('/checkout', (req, res) => {
+router.post('/checkout', async (req, res) => {
   const items = parseItems(req.body);
   try {
-    res.json({ items: checkoutTx(items) });
+    res.json({ items: await checkoutTx(items) });
   } catch (e) {
     if (e instanceof StockError) {
       return res.status(409).json({ error: { message: e.message, productId: e.productId, available: e.available } });
@@ -67,11 +92,9 @@ router.post('/checkout', (req, res) => {
 });
 
 // POST /internal/restock — hoàn kho (đơn bị hủy, hoặc bù trừ khi tạo đơn thất bại)
-router.post('/restock', (req, res) => {
+router.post('/restock', async (req, res) => {
   const items = parseItems(req.body);
-  db.transaction(() => {
-    for (const { productId, quantity } of items) incStock.run(quantity, now(), productId);
-  })();
+  await restockTx(items);
   res.json({ ok: true });
 });
 

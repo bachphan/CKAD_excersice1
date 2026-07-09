@@ -1,0 +1,138 @@
+# Mặc định deny toàn bộ ingress trong namespace, rồi mở đúng luồng cần thiết.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: babymilk
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# frontend: nhận traffic từ ngoài (NodePort) -> không cần policy ingress riêng vì
+# NodePort traffic đi qua kube-proxy/cilium trước khi tới pod, nhưng để rõ ràng vẫn khai báo mở toàn bộ.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-frontend
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+  - Ingress
+  ingress:
+  - {}
+---
+# user-service: chỉ nhận request từ frontend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-user
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: user-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - port: 4002
+---
+# order-service: chỉ nhận request từ frontend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-order
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: order-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - port: 4003
+---
+# postgres: chỉ 3 backend service được kết nối, frontend KHÔNG được (không có lý do gì cần).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backends-to-postgres
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: product-service
+    - podSelector:
+        matchLabels:
+          app: user-service
+    - podSelector:
+        matchLabels:
+          app: order-service
+    ports:
+    - port: 5432
+---
+# product-service: KHÔNG dùng NetworkPolicy L3/L4 riêng ở đây — chỉ dùng CiliumNetworkPolicy (L7) bên dưới.
+# Lý do: Cilium cộng dồn (OR) nhiều policy cùng chọn 1 pod — nếu có thêm policy L3/L4 cho phép
+# nguyên port 4001, nó sẽ "mở khoá" luôn cả /internal/*, vô hiệu hoá giới hạn L7 phía dưới.
+# CiliumNetworkPolicy (L7 HTTP-aware) - đây là điểm khác biệt Cilium so với Calico OSS:
+# /internal/* trên product-service CHỈ order-service được gọi, frontend chỉ được gọi /api/*.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: product-internal-l7
+  namespace: babymilk
+spec:
+  endpointSelector:
+    matchLabels:
+      app: product-service
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: order-service
+    toPorts:
+    - ports:
+      - port: "4001"
+        protocol: TCP
+      rules:
+        http:
+        - method: "POST"
+          path: "/internal/.*"
+  - fromEndpoints:
+    - matchLabels:
+        app: frontend
+    toPorts:
+    - ports:
+      - port: "4001"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/.*"
+        - method: "POST"
+          path: "/api/.*"
+        - method: "PUT"
+          path: "/api/.*"
+        - method: "PATCH"
+          path: "/api/.*"
+        - method: "DELETE"
+          path: "/api/.*"

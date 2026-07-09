@@ -15,15 +15,35 @@ spec:
     spec:
       containers:
       - name: order-service
-        image: docker.io/babymilk/order-service:1.0
+        image: docker.io/babymilk/order-service:2.0
         imagePullPolicy: Never
         ports:
         - containerPort: 4003
         env:
         - name: PORT
           value: "4003"
-        - name: DB_PATH
-          value: "./data/orders.db"
+        - name: PGHOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGHOST
+        - name: PGPORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGPORT
+        - name: PGUSER
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGUSER
+        - name: PGDATABASE
+          value: "babymilk_orders"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: POSTGRES_PASSWORD
         - name: PRODUCT_SERVICE_URL
           valueFrom:
             configMapKeyRef:
@@ -63,12 +83,6 @@ spec:
             port: 4003
           initialDelaySeconds: 10
           periodSeconds: 10
-        volumeMounts:
-        - name: data
-          mountPath: /app/data
-      volumes:
-      - name: data
-        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

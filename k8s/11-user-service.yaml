@@ -15,15 +15,35 @@ spec:
     spec:
       containers:
       - name: user-service
-        image: docker.io/babymilk/user-service:1.0
+        image: docker.io/babymilk/user-service:2.0
         imagePullPolicy: Never
         ports:
         - containerPort: 4002
         env:
         - name: PORT
           value: "4002"
-        - name: DB_PATH
-          value: "./data/users.db"
+        - name: PGHOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGHOST
+        - name: PGPORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGPORT
+        - name: PGUSER
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGUSER
+        - name: PGDATABASE
+          value: "babymilk_users"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: POSTGRES_PASSWORD
         - name: JWT_EXPIRES_IN
           valueFrom:
             configMapKeyRef:
@@ -63,12 +83,6 @@ spec:
             port: 4002
           initialDelaySeconds: 10
           periodSeconds: 10
-        volumeMounts:
-        - name: data
-          mountPath: /app/data
-      volumes:
-      - name: data
-        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

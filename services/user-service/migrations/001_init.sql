@@ -1,6 +1,6 @@
--- SQL ANSI, dễ chuyển sang PostgreSQL (xem ghi chú ở product-service/migrations/001_init.sql)
+-- Schema PostgreSQL (đã chuyển từ SQLite: INTEGER PRIMARY KEY -> SERIAL PRIMARY KEY).
 CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY,
+  id            SERIAL PRIMARY KEY,
   email         TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   full_name     TEXT NOT NULL,

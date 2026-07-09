@@ -1,0 +1,38 @@
+# Từ khi chuyển sang PostgreSQL, 3 backend không còn ghi file SQLite cục bộ nữa
+# (data giờ nằm trong Postgres) — nên chỉ còn 1 PV/PVC duy nhất cho Postgres.
+# Static provisioning: PV kiểu hostPath trên node worker (nơi duy nhất chạy app, vì master bị taint).
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-data-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /mnt/babymilk-data/postgres
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - k8s-worker1
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-pvc
+  namespace: babymilk
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: manual
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: postgres-data-pv

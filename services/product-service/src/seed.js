@@ -1,4 +1,4 @@
-import { db, now } from './db.js';
+import { pool, query, now } from './db.js';
 
 // Dữ liệu mẫu — chỉ nạp khi bảng products rỗng (idempotent, an toàn khi restart pod).
 const PRODUCTS = [
@@ -46,14 +46,26 @@ const PRODUCTS = [
     'Sữa bột tách béo, lactose, dầu thực vật, GOS, DHA, vitamin C/D, kẽm, selen.'],
 ];
 
-export function seedIfEmpty() {
-  const { c } = db.prepare('SELECT COUNT(*) AS c FROM products').get();
-  if (c > 0) return;
+export async function seedIfEmpty() {
+  const { rows } = await query('SELECT COUNT(*) AS c FROM products');
+  if (Number(rows[0].c) > 0) return;
   const ts = now();
-  const insert = db.prepare(`INSERT INTO products (name, brand, age_range, price, stock, origin, description, ingredients, image_url, created_at, updated_at)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`);
-  db.transaction(() => {
-    for (const p of PRODUCTS) insert.run(...p, ts, ts);
-  })();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const p of PRODUCTS) {
+      await client.query(
+        `INSERT INTO products (name, brand, age_range, price, stock, origin, description, ingredients, image_url, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10)`,
+        [...p, ts, ts]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
   console.log(`[seed] inserted ${PRODUCTS.length} sample products`);
 }

@@ -12,7 +12,7 @@ for (const key of ['JWT_SECRET', 'INTERNAL_API_KEY']) {
   }
 }
 
-if (process.env.SEED_ON_START !== 'false') seedIfEmpty();
+if (process.env.SEED_ON_START !== 'false') await seedIfEmpty();
 
 const app = express();
 app.disable('x-powered-by');

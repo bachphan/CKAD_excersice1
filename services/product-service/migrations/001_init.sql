@@ -1,7 +1,6 @@
--- Chỉ dùng SQL ANSI để sau này chuyển sang PostgreSQL không phải sửa schema:
---   INTEGER PRIMARY KEY -> SERIAL/IDENTITY, TEXT -> TEXT/VARCHAR, timestamp lưu ISO-8601 TEXT.
+-- Schema PostgreSQL (đã chuyển từ SQLite: INTEGER PRIMARY KEY -> SERIAL PRIMARY KEY).
 CREATE TABLE IF NOT EXISTS products (
-  id          INTEGER PRIMARY KEY,
+  id          SERIAL  PRIMARY KEY,
   name        TEXT    NOT NULL,
   brand       TEXT    NOT NULL,
   age_range   TEXT    NOT NULL,
