@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  namespace: babymilk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: product-service
+  template:
+    metadata:
+      labels:
+        app: product-service
+    spec:
+      containers:
+      - name: product-service
+        image: docker.io/babymilk/product-service:1.0
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4001
+        env:
+        - name: PORT
+          value: "4001"
+        - name: DB_PATH
+          value: "./data/products.db"
+        - name: SEED_ON_START
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: SEED_ON_START
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: JWT_SECRET
+        - name: INTERNAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: INTERNAL_API_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 150m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 4001
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 4001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  namespace: babymilk
+spec:
+  selector:
+    app: product-service
+  ports:
+  - port: 4001
+    targetPort: 4001

@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: babymilk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - name: user-service
+        image: docker.io/babymilk/user-service:1.0
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4002
+        env:
+        - name: PORT
+          value: "4002"
+        - name: DB_PATH
+          value: "./data/users.db"
+        - name: JWT_EXPIRES_IN
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: JWT_EXPIRES_IN
+        - name: ADMIN_EMAIL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: ADMIN_EMAIL
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: JWT_SECRET
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: ADMIN_PASSWORD
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 150m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 4002
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 4002
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: babymilk
+spec:
+  selector:
+    app: user-service
+  ports:
+  - port: 4002
+    targetPort: 4002

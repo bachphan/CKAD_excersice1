@@ -4,3 +4,4 @@ services/*/data/
 *.db-shm
 *.db-wal
 .env
+k8s/02-secret.yaml

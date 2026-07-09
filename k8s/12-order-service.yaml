@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: babymilk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-service
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+      - name: order-service
+        image: docker.io/babymilk/order-service:1.0
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4003
+        env:
+        - name: PORT
+          value: "4003"
+        - name: DB_PATH
+          value: "./data/orders.db"
+        - name: PRODUCT_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PRODUCT_SERVICE_URL
+        - name: PRODUCT_SERVICE_TIMEOUT_MS
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PRODUCT_SERVICE_TIMEOUT_MS
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: JWT_SECRET
+        - name: INTERNAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: INTERNAL_API_KEY
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 150m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 4003
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 4003
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: babymilk
+spec:
+  selector:
+    app: order-service
+  ports:
+  - port: 4003
+    targetPort: 4003
