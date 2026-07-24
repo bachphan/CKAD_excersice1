@@ -98,3 +98,19 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => console.log(`frontend (static + gateway) listening on http://localhost:${PORT}`));
+
+// Graceful shutdown (12-factor #9 - Disposability): ngừng nhận request mới, chờ request
+// đang xử lý xong rồi mới thoát — tránh cắt ngang response dở khi K8s gửi SIGTERM.
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down gracefully...`);
+  server.close(() => {
+    console.log('server closed, exiting');
+    process.exit(0);
+  });
+  setTimeout(() => {
+    console.error('graceful shutdown timed out, forcing exit');
+    process.exit(1);
+  }, 10_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

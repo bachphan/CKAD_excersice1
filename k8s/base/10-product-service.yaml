@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: product-service
-        image: docker.io/babymilk/product-service:2.1
+        image: docker.io/babymilk/product-service:2.2
         imagePullPolicy: Never
         securityContext:
           readOnlyRootFilesystem: true

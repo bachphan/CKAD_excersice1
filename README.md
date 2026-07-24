@@ -37,6 +37,7 @@ user-service-7b4bd6cf99-74g76      1/1     Running   2          k8s-worker1
 - [x] **NetworkPolicy Egress** — `default-deny-egress` + allow DNS + allow đúng luồng nội bộ; backend **không ra được internet** (verify: request treo tới timeout, không có response). Chi tiết: `lab/lab_4.3.txt`.
 - [x] **StorageClass động** — cài `local-path-provisioner`, verify dynamic provisioning + persistence thật (pod hoàn toàn khác, không ghi gì, vẫn đọc được data cũ). Chi tiết: `lab/lab_4.4.txt`.
 - [ ] **Ingress** — thử bật Cilium Ingress Controller, gặp sự cố hạ tầng thật (agent Cilium trên node worker kẹt >10 phút, phải reboot node để khắc phục) → đã **rollback**, chưa hoàn thành. Chi tiết đầy đủ (nguyên nhân + cách khắc phục): `lab/lab_4.2.txt`.
+- [x] **12-Factor App** — soát lại theo [12factor.net](https://www.12factor.net/), đạt 11/12 (Config, Backing services, Build/release/run, Processes stateless, Port binding, Concurrency, Dev/prod parity, Logs, Admin processes đều đạt). Điểm thiếu duy nhất (**#9 Disposability** — graceful shutdown) đã fix: cả 4 service bắt `SIGTERM`/`SIGINT`, đóng HTTP server + connection pool trước khi thoát thay vì bị kill đột ngột. Verify thật bằng `kubectl delete pod` giữa lúc rolling update, thấy đúng log `SIGTERM received, shutting down gracefully...` → `server + db pool closed, exiting`.
 
 ## 🖥️ Môi trường hạ tầng (K8s cluster)
 
@@ -178,10 +179,10 @@ Toàn bộ quy trình dưới đây đã thực hiện thật và app đang ch�
 
 ```bash
 cd baby-milk-shop
-docker build -t babymilk/product-service:2.1 ./services/product-service
-docker build -t babymilk/user-service:2.0    ./services/user-service
-docker build -t babymilk/order-service:2.0   ./services/order-service
-docker build -t babymilk/frontend:1.0        ./services/frontend
+docker build -t babymilk/product-service:2.2 ./services/product-service
+docker build -t babymilk/user-service:2.1    ./services/user-service
+docker build -t babymilk/order-service:2.1   ./services/order-service
+docker build -t babymilk/frontend:1.1        ./services/frontend
 docker pull postgres:16-alpine
 ```
 
@@ -192,7 +193,7 @@ Mỗi image backend ~58MB (`node:22-alpine`, multi-stage, non-root `USER node`; 
 Chỉ cần đưa vào node **worker** (vì master bị taint, không nhận app pod):
 
 ```bash
-docker save babymilk/product-service:2.1 babymilk/user-service:2.0 babymilk/order-service:2.0 babymilk/frontend:1.0 postgres:16-alpine -o babymilk-images.tar
+docker save babymilk/product-service:2.2 babymilk/user-service:2.1 babymilk/order-service:2.1 babymilk/frontend:1.1 postgres:16-alpine -o babymilk-images.tar
 scp babymilk-images.tar bachpt1@192.168.56.102:/tmp/
 ssh bachpt1@192.168.56.102 "sudo ctr -n k8s.io images import /tmp/babymilk-images.tar"
 ```

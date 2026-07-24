@@ -1,5 +1,5 @@
 import express from 'express';
-import './db.js'; // mở DB + chạy migration ngay khi start
+import { pool } from './db.js'; // mở DB + chạy migration ngay khi start
 import { seedIfEmpty } from './seed.js';
 import productsRouter from './routes/products.js';
 import internalRouter from './routes/internal.js';
@@ -26,4 +26,24 @@ app.use(notFound);
 app.use(errorHandler);
 
 const port = Number(process.env.PORT || 4001);
-app.listen(port, () => console.log(`product-service listening on http://localhost:${port}`));
+const server = app.listen(port, () => console.log(`product-service listening on http://localhost:${port}`));
+
+// Graceful shutdown (12-factor #9 - Disposability): ngừng nhận request mới, chờ request
+// đang xử lý xong, đóng connection pool, rồi mới thoát — tránh cắt ngang transaction dở
+// hoặc bỏ sót request khi K8s gửi SIGTERM lúc rolling update/scale down.
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down gracefully...`);
+  server.close(() => {
+    pool.end(() => {
+      console.log('server + db pool closed, exiting');
+      process.exit(0);
+    });
+  });
+  // Không để treo vô hạn nếu có request/connection cứng đầu không đóng được.
+  setTimeout(() => {
+    console.error('graceful shutdown timed out, forcing exit');
+    process.exit(1);
+  }, 10_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

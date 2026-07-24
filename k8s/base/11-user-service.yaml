@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: user-service
-        image: docker.io/babymilk/user-service:2.0
+        image: docker.io/babymilk/user-service:2.1
         imagePullPolicy: Never
         securityContext:
           readOnlyRootFilesystem: true

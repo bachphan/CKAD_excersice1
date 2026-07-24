@@ -1,5 +1,5 @@
 import express from 'express';
-import './db.js';
+import { pool } from './db.js';
 import { seedAdmin } from './seed.js';
 import authRouter from './routes/auth.js';
 import usersRouter from './routes/users.js';
@@ -24,4 +24,21 @@ app.use(notFound);
 app.use(errorHandler);
 
 const port = Number(process.env.PORT || 4002);
-app.listen(port, () => console.log(`user-service listening on http://localhost:${port}`));
+const server = app.listen(port, () => console.log(`user-service listening on http://localhost:${port}`));
+
+// Graceful shutdown (12-factor #9 - Disposability)
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down gracefully...`);
+  server.close(() => {
+    pool.end(() => {
+      console.log('server + db pool closed, exiting');
+      process.exit(0);
+    });
+  });
+  setTimeout(() => {
+    console.error('graceful shutdown timed out, forcing exit');
+    process.exit(1);
+  }, 10_000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
