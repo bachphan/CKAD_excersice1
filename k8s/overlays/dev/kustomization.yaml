@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# dev = môi trường thử nghiệm riêng biệt: namespace khác (babymilk-dev) để không đụng prod,
+# NodePort khác (30090 thay vì 30080) để có thể chạy song song trên cùng cluster nếu cần,
+# HPA giới hạn thấp hơn (dev không cần scale nhiều, tiết kiệm tài nguyên node).
+#
+# LƯU Ý: overlay này CHƯA apply lên cluster thật (chỉ validate bằng "kubectl kustomize") —
+# cluster hiện chỉ có 1.9 CPU/3.2GB khả dụng, không đủ chạy thêm 1 bộ babymilk-dev đầy đủ
+# (kể cả Postgres riêng) song song với bản prod đang chạy.
+namespace: babymilk-dev
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Service
+      name: frontend
+    patch: |-
+      - op: replace
+        path: /spec/ports/0/nodePort
+        value: 30090
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: product-service-hpa
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 1
+  - target:
+      kind: CronJob
+      name: stock-monitor
+    patch: |-
+      - op: add
+        path: /spec/suspend
+        value: true

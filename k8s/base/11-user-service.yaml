@@ -1,27 +1,28 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: product-service
+  name: user-service
   namespace: babymilk
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: product-service
+      app: user-service
   template:
     metadata:
       labels:
-        app: product-service
+        app: user-service
+        tier: backend
     spec:
       containers:
-      - name: product-service
-        image: docker.io/babymilk/product-service:2.0
+      - name: user-service
+        image: docker.io/babymilk/user-service:2.0
         imagePullPolicy: Never
         ports:
-        - containerPort: 4001
+        - containerPort: 4002
         env:
         - name: PORT
-          value: "4001"
+          value: "4002"
         - name: PGHOST
           valueFrom:
             configMapKeyRef:
@@ -38,27 +39,32 @@ spec:
               name: babymilk-config
               key: PGUSER
         - name: PGDATABASE
-          value: "babymilk_products"
+          value: "babymilk_users"
         - name: PGPASSWORD
           valueFrom:
             secretKeyRef:
               name: babymilk-secret
               key: POSTGRES_PASSWORD
-        - name: SEED_ON_START
+        - name: JWT_EXPIRES_IN
           valueFrom:
             configMapKeyRef:
               name: babymilk-config
-              key: SEED_ON_START
+              key: JWT_EXPIRES_IN
+        - name: ADMIN_EMAIL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: ADMIN_EMAIL
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
               name: babymilk-secret
               key: JWT_SECRET
-        - name: INTERNAL_API_KEY
+        - name: ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:
               name: babymilk-secret
-              key: INTERNAL_API_KEY
+              key: ADMIN_PASSWORD
         resources:
           requests:
             cpu: 50m
@@ -69,24 +75,24 @@ spec:
         readinessProbe:
           httpGet:
             path: /healthz
-            port: 4001
+            port: 4002
           initialDelaySeconds: 3
           periodSeconds: 5
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 4001
+            port: 4002
           initialDelaySeconds: 10
           periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: product-service
+  name: user-service
   namespace: babymilk
 spec:
   selector:
-    app: product-service
+    app: user-service
   ports:
-  - port: 4001
-    targetPort: 4001
+  - port: 4002
+    targetPort: 4002

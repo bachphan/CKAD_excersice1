@@ -136,3 +136,16 @@ spec:
           path: "/api/.*"
         - method: "DELETE"
           path: "/api/.*"
+  # Lab 1.3: CronJob "stock-monitor" cần đọc /api/products để cảnh báo tồn kho thấp.
+  # Consumer mới -> phải xin quyền tường minh, chỉ cho GET (không cho sửa/xoá).
+  - fromEndpoints:
+    - matchLabels:
+        app: stock-monitor
+    toPorts:
+    - ports:
+      - port: "4001"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/.*"

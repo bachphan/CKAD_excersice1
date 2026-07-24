@@ -12,6 +12,7 @@ spec:
     metadata:
       labels:
         app: order-service
+        tier: backend
     spec:
       containers:
       - name: order-service

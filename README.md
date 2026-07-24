@@ -2,7 +2,7 @@
 
 Ứng dụng web bán sữa bột chia thành **4 microservice độc lập + PostgreSQL**, container hóa và **đang chạy thật trên cụm Kubernetes tự dựng bằng kubeadm trên VirtualBox** (không phải cloud, không phải minikube) — kèm đầy đủ NetworkPolicy (L3/L4 + L7), PersistentVolume, và HorizontalPodAutoscaler.
 
-## ✅ Trạng thái hiện tại: ĐANG CHẠY TRÊN K8S — đầy đủ NetworkPolicy + PVC + HPA + PostgreSQL
+## ✅ Trạng thái hiện tại: ĐANG CHẠY TRÊN K8S — NetworkPolicy + PVC + HPA + PostgreSQL + CronJob + Kustomize
 
 | | |
 |---|---|
@@ -10,24 +10,28 @@
 | Namespace | `babymilk` |
 | Pods | 5/5 `Running` (4 app + 1 postgres), tất cả trên node `k8s-worker1` |
 | Database | PostgreSQL 16 (1 instance, 3 database logic: `babymilk_products/users/orders`) |
+| Deploy bằng | Kustomize — `kubectl apply -k k8s/overlays/prod` (xem mục "Deploy" bên dưới) |
 | Admin | `admin@babymilk.local` / `admin12345` |
 | Dữ liệu | 14 sản phẩm sữa mẫu, seed tự động |
 
 ```
 NAME                               READY   STATUS    RESTARTS   NODE
-frontend-64588fcb97-g5hrg          1/1     Running   0          k8s-worker1
-order-service-65bb9c9dd5-2rhh9     1/1     Running   0          k8s-worker1
-postgres-7488888579-xzq95          1/1     Running   0          k8s-worker1
-product-service-6dbd9fcb75-8fbrd   1/1     Running   0          k8s-worker1
-user-service-5fbb77747-27hv6       1/1     Running   0          k8s-worker1
+frontend-5f7f9c77f-67mtb           1/1     Running   0          k8s-worker1
+order-service-6bfd6b99f-rjpb4      1/1     Running   2          k8s-worker1
+postgres-65f4dddc66-zv676          1/1     Running   0          k8s-worker1
+product-service-65cc887fdd-968st   1/1     Running   1          k8s-worker1
+user-service-7b4bd6cf99-74g76      1/1     Running   2          k8s-worker1
 ```
 
-### Checklist hạ tầng — đã hoàn thành đủ 4/4
+### Checklist hạ tầng — đã hoàn thành
 
-- [x] **NetworkPolicy** — mặc định deny toàn bộ ingress trong namespace, mở đúng luồng cần thiết. Riêng `product-service` dùng **CiliumNetworkPolicy (L7 HTTP-aware)**: `/internal/*` chỉ `order-service` gọi được, `frontend` chỉ được gọi `/api/*` — đã verify thực tế bằng cách exec vào pod `frontend` gọi thẳng `/internal/checkout`, nhận về `403 Access denied` (chặn ở tầng Cilium Envoy proxy, không phải app tự check).
+- [x] **NetworkPolicy** — mặc định deny toàn bộ ingress trong namespace, mở đúng luồng cần thiết. Riêng `product-service` dùng **CiliumNetworkPolicy (L7 HTTP-aware)**: `/internal/*` chỉ `order-service` gọi được, `frontend` + `stock-monitor` (CronJob) chỉ được gọi `/api/*` — đã verify thực tế bằng cách exec vào pod `frontend` gọi thẳng `/internal/checkout`, nhận về `403 Access denied` (chặn ở tầng Cilium Envoy proxy, không phải app tự check).
 - [x] **PersistentVolumeClaim** — Postgres data mount qua PVC (hostPath static provisioning, `1Gi`), đã verify: xóa pod Postgres, tạo pod mới, order/product data vẫn còn nguyên.
-- [x] **HorizontalPodAutoscaler** — `product-service-hpa` (min 1 / max 3, target CPU 70%), cần cài thêm `metrics-server` (chưa có sẵn trong cluster kubeadm, phải thêm flag `--kubelet-insecure-tls` vì kubelet dùng self-signed cert). Đã verify HPA đọc được metrics real-time (`cpu: 4%/70%`); **chưa** verify được cảnh scale-up thật vì app quá nhẹ (mỗi request vài ms), test tải song song 8 luồng vẫn không đẩy CPU quá ~5%.
+- [x] **HorizontalPodAutoscaler** — `product-service-hpa` (min 1 / max 3, target CPU **50%**), cần cài thêm `metrics-server` (chưa có sẵn trong cluster kubeadm, phải thêm flag `--kubelet-insecure-tls` vì kubelet dùng self-signed cert). Đã verify HPA đọc được metrics real-time; đã thử scale tay `product-service` lên 10 replicas để test (xem `lab/lab_2.3.txt`) — thành công, sau đó scale về lại 1 và để HPA quản lý.
 - [x] **PostgreSQL** — chuyển hoàn toàn 3 backend từ SQLite (`better-sqlite3`, đồng bộ) sang PostgreSQL (`pg`, bất đồng bộ), giữ nguyên toàn bộ business logic (transaction nguyên tử khi checkout dùng `SELECT ... FOR UPDATE` thay cho serialize của SQLite). Đã test đầy đủ: catalog, login, checkout đa sản phẩm, huỷ đơn hoàn kho, chặn mua vượt tồn kho — cả local (Docker Postgres) lẫn trên cluster thật.
+- [x] **Job/CronJob** — `stock-monitor` (CronJob, chạy 8h sáng mỗi ngày) tự tạo Job gọi API `product-service` cảnh báo sản phẩm tồn kho thấp. Consumer mới → đã xin quyền tường minh qua CiliumNetworkPolicy (không tái dùng label service khác, tránh dính nhầm vào Service selector thật).
+- [x] **Kustomize** — `k8s/` tái cấu trúc thành `base/` + `overlays/{prod,dev}`. `prod` = đúng cấu hình đang chạy thật (verify bằng `kubectl diff -k` = 0 khác biệt trước khi chuyển hẳn cách deploy). `dev` = namespace/NodePort/HPA riêng, đã validate render đúng nhưng **chưa apply lên cluster** (không đủ tài nguyên chạy song song 2 bộ đầy đủ trên node worker duy nhất).
+- [x] **Rolling update + Rollback** đã test thật trên `product-service` (v2.0→v2.1→giả lập bản lỗi→rollback), **Blue/Green** đã test thật trên `frontend` (banner xanh lá đổi qua Service selector, đã trả về nguyên trạng sau demo). Chi tiết: `lab/lab_2.1.txt`, `lab/lab_2.2.txt`.
 
 ## 🖥️ Môi trường hạ tầng (K8s cluster)
 
@@ -167,7 +171,7 @@ Toàn bộ quy trình dưới đây đã thực hiện thật và app đang ch�
 
 ```bash
 cd baby-milk-shop
-docker build -t babymilk/product-service:2.0 ./services/product-service
+docker build -t babymilk/product-service:2.1 ./services/product-service
 docker build -t babymilk/user-service:2.0    ./services/user-service
 docker build -t babymilk/order-service:2.0   ./services/order-service
 docker build -t babymilk/frontend:1.0        ./services/frontend
@@ -181,7 +185,7 @@ Mỗi image backend ~58MB (`node:22-alpine`, multi-stage, non-root `USER node`; 
 Chỉ cần đưa vào node **worker** (vì master bị taint, không nhận app pod):
 
 ```bash
-docker save babymilk/product-service:2.0 babymilk/user-service:2.0 babymilk/order-service:2.0 babymilk/frontend:1.0 postgres:16-alpine -o babymilk-images.tar
+docker save babymilk/product-service:2.1 babymilk/user-service:2.0 babymilk/order-service:2.0 babymilk/frontend:1.0 postgres:16-alpine -o babymilk-images.tar
 scp babymilk-images.tar bachpt1@192.168.56.102:/tmp/
 ssh bachpt1@192.168.56.102 "sudo ctr -n k8s.io images import /tmp/babymilk-images.tar"
 ```
@@ -189,13 +193,14 @@ ssh bachpt1@192.168.56.102 "sudo ctr -n k8s.io images import /tmp/babymilk-image
 ### 3. Tạo Secret (KHÔNG commit giá trị thật lên git)
 
 ```bash
-cp k8s/02-secret.yaml.example k8s/02-secret.yaml
+cp k8s/base/02-secret.yaml.example k8s/base/02-secret.yaml
 # Sửa các giá trị REPLACE_ME_* trong file, sinh ngẫu nhiên bằng:
 openssl rand -hex 24   # JWT_SECRET
 openssl rand -hex 16   # INTERNAL_API_KEY, POSTGRES_PASSWORD
+kubectl apply -f k8s/base/02-secret.yaml
 ```
 
-`k8s/02-secret.yaml` đã nằm trong `.gitignore` — không bao giờ push file này lên git.
+`k8s/base/02-secret.yaml` đã nằm trong `.gitignore` — không bao giờ push file này lên git. Secret KHÔNG nằm trong `kustomization.yaml` (áp dụng tách riêng, xem lý do ở mục Kustomize bên dưới).
 
 ### 4. Cài metrics-server (bắt buộc để HPA hoạt động, không có sẵn trong kubeadm)
 
@@ -212,49 +217,63 @@ kubectl apply -f metrics-server.yaml
 ssh bachpt1@192.168.56.102 "sudo mkdir -p /mnt/babymilk-data/postgres && sudo chown -R 999:999 /mnt/babymilk-data/postgres"
 ```
 
-### 6. Apply toàn bộ manifest
+### 6. Deploy bằng Kustomize
 
 ```bash
-kubectl apply -f k8s/
+kubectl apply -k k8s/overlays/prod
 ```
 
-Thứ tự khuyến nghị (nếu apply thủ công từng phần): `00-namespace` → `01-configmap` → `02-secret` → `30-pv-pvc` → `50-postgres` (đợi Ready) → `20-networkpolicy` → `10/11/12/13` (4 service) → `40-hpa`.
+`prod` = đúng cấu hình đang chạy thật (namespace `babymilk`, NodePort `30080`). Trước khi deploy lần đầu hoặc sau khi sửa manifest, luôn kiểm tra trước bằng:
+
+```bash
+kubectl kustomize k8s/overlays/prod   # render thử, xem có ra đúng YAML mong đợi không
+kubectl diff -k k8s/overlays/prod     # so sánh với cluster đang chạy TRƯỚC khi apply
+```
 
 ### 7. Kiểm tra & truy cập
 
 ```bash
 kubectl get pods -n babymilk -o wide          # 5 pod phải Running 1/1 (4 app + postgres)
 kubectl get hpa -n babymilk                    # xem HPA đọc được metrics chưa
+kubectl get cronjob -n babymilk                 # xem CronJob stock-monitor
 curl http://192.168.56.102:30080/healthz        # test từ máy host
 ```
 
 Mở trình duyệt: **http://192.168.56.102:30080**
 
-### Chi tiết cấu hình đã dùng trong manifest (`k8s/`)
+### Kustomize — cấu trúc `k8s/`
 
-| File | Nội dung |
-|---|---|
-| `00-namespace.yaml` | Namespace `babymilk` |
-| `01-configmap.yaml` | URL nội bộ giữa service, `PGHOST/PGPORT/PGUSER`, timeout, `SEED_ON_START` |
-| `02-secret.yaml` (gitignored) | `JWT_SECRET`, `INTERNAL_API_KEY`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD` |
-| `10-product-service.yaml` | Deployment + Service `product-service`, port 4001 |
-| `11-user-service.yaml` | Deployment + Service `user-service`, port 4002 |
-| `12-order-service.yaml` | Deployment + Service `order-service`, port 4003 |
-| `13-frontend.yaml` | Deployment + Service `frontend` (`NodePort 30080`), port 4000 |
-| `20-networkpolicy.yaml` | `default-deny-ingress` + các policy mở luồng cần thiết + `CiliumNetworkPolicy` L7 cho `product-service` |
-| `30-pv-pvc.yaml` | PV (hostPath, static) + PVC `1Gi` cho Postgres data |
-| `40-hpa.yaml` | HPA cho `product-service` (min 1 / max 3, CPU 70%) |
-| `50-postgres.yaml` | ConfigMap init-script (tạo 3 database) + Deployment + Service `postgres` |
+```
+k8s/
+├── base/                        # toàn bộ manifest gốc + kustomization.yaml
+│   ├── kustomization.yaml
+│   ├── 00-namespace.yaml
+│   ├── 01-configmap.yaml
+│   ├── 02-secret.yaml.example   # copy thành 02-secret.yaml (gitignored), apply riêng, KHÔNG qua kustomize
+│   ├── 10-product-service.yaml
+│   ├── 11-user-service.yaml
+│   ├── 12-order-service.yaml
+│   ├── 13-frontend.yaml         # Service NodePort :30080
+│   ├── 20-networkpolicy.yaml    # NetworkPolicy L3/L4 + CiliumNetworkPolicy L7
+│   ├── 30-pv-pvc.yaml           # PV/PVC Postgres (hostPath static)
+│   ├── 40-hpa.yaml              # HPA product-service (min1/max3, CPU 50%)
+│   └── 60-stock-monitor.yaml    # CronJob cảnh báo tồn kho thấp
+└── overlays/
+    ├── prod/kustomization.yaml  # resources: [../../base], KHÔNG patch — đúng cấu hình chạy thật
+    └── dev/kustomization.yaml   # namespace babymilk-dev, NodePort 30090, HPA max=1, CronJob suspend
+                                  # (chưa apply lên cluster — không đủ tài nguyên chạy song song với prod)
+```
 
 Mỗi Deployment backend: `replicas: 1`, `imagePullPolicy: Never` (image chỉ có local trên worker, không có registry để pull), resource `requests: 50m CPU/32-64Mi RAM`, `limits: 100-150m CPU/64-256Mi RAM`, `readinessProbe`/`livenessProbe` qua `GET /healthz`. Postgres: `requests: 100m/128Mi`, `limits: 300m/384Mi`, probe bằng `pg_isready`, data mount qua PVC.
 
-### Việc có thể làm tiếp (chưa làm — ngoài phạm vi checklist hiện tại)
+### Việc có thể làm tiếp (chưa làm — ngoài phạm vi hiện tại)
 
 - [ ] `PodDisruptionBudget`.
 - [ ] Ingress (Cilium có sẵn Ingress support) thay cho NodePort, dùng domain đẹp thay vì gõ IP:port.
-- [ ] Load test mạnh hơn (nhiều pod song song / công cụ như `k6`, `hey`) để thực sự quan sát HPA scale-up — app hiện tại quá nhẹ nên chưa chạm ngưỡng CPU 70% trong test thủ công.
+- [ ] Load test mạnh hơn (nhiều pod song song / công cụ như `k6`, `hey`) để thực sự quan sát HPA scale-up — app hiện tại quá nhẹ nên chưa chạm ngưỡng CPU 50% trong test thủ công (đã scale tay lên 10 replicas để test riêng phần scale, xem `lab/lab_2.3.txt`).
 - [ ] Thêm init container `wait-for-postgres` cho 3 backend — hiện tại nếu Postgres chưa sẵn sàng lúc pod backend start, pod sẽ crash rồi tự retry theo cơ chế restart mặc định của K8s (chấp nhận được, nhưng init container sẽ gọn hơn).
-- [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật (hiện tại toàn bộ app chỉ chạy trên 1 node).
+- [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật, và có đủ tài nguyên apply thật overlay `dev` song song với `prod`.
+- [ ] Tăng `timeoutSeconds` cho readiness/liveness probe (hiện dùng mặc định 1s) — phát hiện lúc rolling update (`lab/lab_2.1.txt`) probe timeout giả do CPU limit chặt, gây restart không cần thiết dù app vẫn hoạt động bình thường.
 
 ## Cấu trúc thư mục
 
@@ -262,18 +281,9 @@ Mỗi Deployment backend: `replicas: 1`, `imagePullPolicy: Never` (image chỉ c
 baby-milk-shop/
 ├── package.json               # scripts: setup, dev (concurrently cả 4 service)
 ├── scripts/setup.mjs          # copy .env + npm install tất cả
-├── k8s/                       # manifest K8s — apply bằng `kubectl apply -f k8s/`
-│   ├── 00-namespace.yaml
-│   ├── 01-configmap.yaml
-│   ├── 02-secret.yaml.example # copy thành 02-secret.yaml + điền giá trị thật (gitignored)
-│   ├── 10-product-service.yaml
-│   ├── 11-user-service.yaml
-│   ├── 12-order-service.yaml
-│   ├── 13-frontend.yaml       # Service type NodePort :30080
-│   ├── 20-networkpolicy.yaml  # NetworkPolicy L3/L4 + CiliumNetworkPolicy L7
-│   ├── 30-pv-pvc.yaml         # PV/PVC cho Postgres (hostPath static provisioning)
-│   ├── 40-hpa.yaml            # HorizontalPodAutoscaler cho product-service
-│   └── 50-postgres.yaml       # Postgres Deployment + Service + init-script ConfigMap
+├── k8s/                       # manifest K8s — apply bằng `kubectl apply -k k8s/overlays/prod`
+│   ├── base/                  # xem chi tiết ở mục "Kustomize — cấu trúc k8s/" phía trên
+│   └── overlays/{prod,dev}/
 └── services/
     ├── product-service/       # :4001 — Express + PostgreSQL (products)
     │   ├── migrations/*.sql   # schema SQL (SERIAL PRIMARY KEY)

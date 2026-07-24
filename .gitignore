@@ -5,3 +5,4 @@ services/*/data/
 *.db-wal
 .env
 k8s/02-secret.yaml
+k8s/base/02-secret.yaml

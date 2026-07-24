@@ -18,7 +18,7 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
 
-app.get('/healthz', (req, res) => res.json({ status: 'ok', service: 'product-service' }));
+app.get('/healthz', (req, res) => res.json({ status: 'ok', service: 'product-service', version: '2.1' }));
 app.use('/api', productsRouter);
 app.use('/internal', internalRouter);
 
