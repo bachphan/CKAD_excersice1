@@ -17,8 +17,54 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      # Init container pattern: chuẩn bị/summarize config trước khi app chính khởi động.
+      initContainers:
+      - name: init-config
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        command: ["sh", "-c"]
+        args:
+          - |
+            echo "== product-service effective config ==" > /init-config/summary.txt
+            echo "PGHOST=$PGHOST" >> /init-config/summary.txt
+            echo "PGPORT=$PGPORT" >> /init-config/summary.txt
+            echo "PGDATABASE=babymilk_products" >> /init-config/summary.txt
+            echo "SEED_ON_START=$SEED_ON_START" >> /init-config/summary.txt
+            cat /init-config/summary.txt
+        env:
+        - name: PGHOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGHOST
+        - name: PGPORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGPORT
+        - name: SEED_ON_START
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: SEED_ON_START
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        volumeMounts:
+        - name: init-config-data
+          mountPath: /init-config
       containers:
       - name: product-service
         image: docker.io/babymilk/product-service:2.2
@@ -29,10 +75,14 @@ spec:
           capabilities:
             drop: ["ALL"]
         ports:
-        - containerPort: 4001
+        - containerPort: 4101
+        volumeMounts:
+        - name: init-config-data
+          mountPath: /init-config
+          readOnly: true
         env:
         - name: PORT
-          value: "4001"
+          value: "4101"
         - name: PGHOST
           valueFrom:
             configMapKeyRef:
@@ -80,17 +130,85 @@ spec:
         readinessProbe:
           httpGet:
             path: /healthz
-            port: 4001
+            port: 4101
           initialDelaySeconds: 3
           periodSeconds: 5
           timeoutSeconds: 3
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 4001
+            port: 4101
           initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 3
+      # Sidecar pattern: đọc log của container ứng dụng trực tiếp từ file kubelet ghi trên node
+      # (KHÔNG đổi cách app ghi log ra stdout — vẫn giữ đúng 12-Factor #11 Logs).
+      - name: log-shipper
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          # Log file trên node do kubelet ghi, chỉ root đọc được (mode 640 root:root) -> sidecar
+          # cần chạy root để đọc; đây là đánh đổi thực tế của mọi log-shipper (Fluent Bit, Filebeat...).
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        command: ["sh", "-c"]
+        args:
+          - |
+            until ls /var/log/containers/${POD_NAME}_babymilk_product-service-*.log 1>/dev/null 2>&1; do sleep 2; done
+            exec tail -F /var/log/containers/${POD_NAME}_babymilk_product-service-*.log
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+      # Ambassador pattern: nginx nhận traffic ở port "công khai" (đúng port Service/NetworkPolicy
+      # đã khai báo), forward vào app đang lắng nghe nội bộ ở 127.0.0.1 -> app không cần biết gì
+      # về network phía ngoài pod.
+      - name: ambassador-nginx
+        image: nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
+        # nginx image cần chown/setuid nội bộ khi khởi động (kể cả chạy root) -> không drop
+        # capabilities ở container này, khác với các container khác trong pod.
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+        ports:
+        - containerPort: 4001
+        volumeMounts:
+        - name: ambassador-conf
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: product-service.conf
+        resources:
+          requests:
+            cpu: 20m
+            memory: 16Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      volumes:
+      - name: init-config-data
+        emptyDir: {}
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: ambassador-conf
+        configMap:
+          name: ambassador-nginx-conf
 ---
 apiVersion: v1
 kind: Service

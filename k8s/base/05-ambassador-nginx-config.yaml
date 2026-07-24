@@ -1,0 +1,47 @@
+# Lab: Multi-container pod design pattern — Ambassador.
+# nginx đứng trước app trong CÙNG pod (chung network namespace), nhận traffic ở port "công khai"
+# (đúng số port mà Service/NetworkPolicy đã khai báo từ trước) rồi forward vào app đang lắng nghe
+# ở 127.0.0.1:<port nội bộ, +100>. App không cần biết gì về network phía ngoài — đúng tinh thần
+# ambassador pattern: che giấu độ phức tạp mạng khỏi app chính.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ambassador-nginx-conf
+  namespace: babymilk
+data:
+  product-service.conf: |
+    server {
+      listen 4001;
+      location / {
+        proxy_pass http://127.0.0.1:4101;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+  user-service.conf: |
+    server {
+      listen 4002;
+      location / {
+        proxy_pass http://127.0.0.1:4102;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+  order-service.conf: |
+    server {
+      listen 4003;
+      location / {
+        proxy_pass http://127.0.0.1:4103;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+  frontend.conf: |
+    server {
+      listen 4000;
+      location / {
+        proxy_pass http://127.0.0.1:4100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }

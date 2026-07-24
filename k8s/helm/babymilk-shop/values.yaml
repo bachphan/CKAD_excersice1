@@ -1,0 +1,39 @@
+# Namespace RIÊNG cho bản Helm-deploy, KHÔNG trùng với "babymilk" (namespace thật do
+# Kustomize quản lý) — để 2 cách deploy chạy song song, không đụng độ resource.
+namespace: babymilk-helm
+
+images:
+  productService: docker.io/babymilk/product-service:2.2
+  userService: docker.io/babymilk/user-service:2.1
+  orderService: docker.io/babymilk/order-service:2.1
+  frontend: docker.io/babymilk/frontend:1.1
+  postgres: postgres:16-alpine
+  nginx: nginx:1.27-alpine
+  busybox: busybox:1.36
+
+frontend:
+  nodePort: 30081
+
+hpa:
+  maxReplicas: 3
+
+cronJob:
+  suspend: false
+
+storageClassName: local-path
+storageSize: 1Gi
+
+# Đổi hết các giá trị REPLACE_ME_* trước khi `helm install` lên môi trường thật
+# (openssl rand -hex 24 cho JWT_SECRET, openssl rand -hex 16 cho các key còn lại) —
+# hoặc truyền qua -f values-secret.yaml (không commit) / --set.
+secrets:
+  jwtSecret: "REPLACE_ME_WITH_RANDOM_HEX"
+  internalApiKey: "REPLACE_ME_WITH_RANDOM_HEX"
+  adminPassword: "REPLACE_ME_WITH_STRONG_PASSWORD"
+  postgresPassword: "REPLACE_ME_WITH_RANDOM_HEX"
+
+resourceQuota:
+  requestsCpu: "1200m"
+  requestsMemory: "1600Mi"
+  limitsCpu: "1800m"
+  limitsMemory: "2800Mi"

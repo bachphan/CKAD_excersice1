@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: babymilk-config
+  namespace: {{ .Values.namespace }}
+data:
+  PRODUCT_SERVICE_URL: "http://product-service:4001"
+  USER_SERVICE_URL: "http://user-service:4002"
+  ORDER_SERVICE_URL: "http://order-service:4003"
+  UPSTREAM_TIMEOUT_MS: "10000"
+  PRODUCT_SERVICE_TIMEOUT_MS: "5000"
+  SEED_ON_START: "true"
+  JWT_EXPIRES_IN: "24h"
+  ADMIN_EMAIL: "admin@babymilk.local"
+  PGHOST: "postgres"
+  PGPORT: "5432"
+  PGUSER: "babymilk"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ambassador-nginx-conf
+  namespace: {{ .Values.namespace }}
+data:
+  product-service.conf: |
+    server {
+      listen 4001;
+      location / {
+        proxy_pass http://127.0.0.1:4101;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+  user-service.conf: |
+    server {
+      listen 4002;
+      location / {
+        proxy_pass http://127.0.0.1:4102;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+  order-service.conf: |
+    server {
+      listen 4003;
+      location / {
+        proxy_pass http://127.0.0.1:4103;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+  frontend.conf: |
+    server {
+      listen 4000;
+      location / {
+        proxy_pass http://127.0.0.1:4100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: {{ .Values.namespace }}
+data:
+  init-databases.sh: |
+    #!/bin/bash
+    set -e
+    for db in babymilk_products babymilk_users babymilk_orders; do
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
+        CREATE DATABASE $db;
+    EOSQL
+    done

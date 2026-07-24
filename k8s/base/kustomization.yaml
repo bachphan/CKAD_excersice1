@@ -6,6 +6,7 @@ kind: Kustomization
 resources:
   - 00-namespace.yaml
   - 01-configmap.yaml
+  - 05-ambassador-nginx-config.yaml
   - 10-product-service.yaml
   - 11-user-service.yaml
   - 12-order-service.yaml

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: babymilk-shop
+description: >
+  Helm chart cho baby-milk-shop — bản deploy song song (KHÔNG thay thế) so với
+  k8s/base (Kustomize). Dùng để demo Helm install/upgrade/rollback trong CKAD lab,
+  deploy vào namespace riêng (mặc định babymilk-helm) để không đụng vào namespace
+  "babymilk" đang chạy thật do Kustomize quản lý.
+type: application
+version: 1.0.0
+appVersion: "2.2"

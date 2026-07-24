@@ -17,8 +17,52 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+      - name: init-config
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        command: ["sh", "-c"]
+        args:
+          - |
+            echo "== frontend effective config ==" > /init-config/summary.txt
+            echo "PRODUCT_SERVICE_URL=$PRODUCT_SERVICE_URL" >> /init-config/summary.txt
+            echo "USER_SERVICE_URL=$USER_SERVICE_URL" >> /init-config/summary.txt
+            echo "ORDER_SERVICE_URL=$ORDER_SERVICE_URL" >> /init-config/summary.txt
+            cat /init-config/summary.txt
+        env:
+        - name: PRODUCT_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PRODUCT_SERVICE_URL
+        - name: USER_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: USER_SERVICE_URL
+        - name: ORDER_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: ORDER_SERVICE_URL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        volumeMounts:
+        - name: init-config-data
+          mountPath: /init-config
       containers:
       - name: frontend
         image: docker.io/babymilk/frontend:1.1
@@ -29,10 +73,14 @@ spec:
           capabilities:
             drop: ["ALL"]
         ports:
-        - containerPort: 4000
+        - containerPort: 4100
+        volumeMounts:
+        - name: init-config-data
+          mountPath: /init-config
+          readOnly: true
         env:
         - name: PORT
-          value: "4000"
+          value: "4100"
         - name: PRODUCT_SERVICE_URL
           valueFrom:
             configMapKeyRef:
@@ -63,17 +111,76 @@ spec:
         readinessProbe:
           httpGet:
             path: /healthz
-            port: 4000
+            port: 4100
           initialDelaySeconds: 3
           periodSeconds: 5
           timeoutSeconds: 3
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 4000
+            port: 4100
           initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 3
+      - name: log-shipper
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        command: ["sh", "-c"]
+        args:
+          - |
+            until ls /var/log/containers/${POD_NAME}_babymilk_frontend-*.log 1>/dev/null 2>&1; do sleep 2; done
+            exec tail -F /var/log/containers/${POD_NAME}_babymilk_frontend-*.log
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+      - name: ambassador-nginx
+        image: nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+        ports:
+        - containerPort: 4000
+        volumeMounts:
+        - name: ambassador-conf
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: frontend.conf
+        resources:
+          requests:
+            cpu: 20m
+            memory: 16Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      volumes:
+      - name: init-config-data
+        emptyDir: {}
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: ambassador-conf
+        configMap:
+          name: ambassador-nginx-conf
 ---
 apiVersion: v1
 kind: Service

@@ -6,3 +6,4 @@ services/*/data/
 .env
 k8s/02-secret.yaml
 k8s/base/02-secret.yaml
+k8s/helm/babymilk-shop/values-secret.yaml
