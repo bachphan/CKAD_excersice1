@@ -65,7 +65,7 @@ spec:
           mountPath: /init-config
       containers:
       - name: frontend
-        image: docker.io/babymilk/frontend:1.1
+        image: docker.io/babymilk/frontend:1.2
         imagePullPolicy: Never
         securityContext:
           readOnlyRootFilesystem: true

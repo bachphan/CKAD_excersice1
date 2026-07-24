@@ -2,6 +2,10 @@
 
 Ứng dụng web bán sữa bột chia thành **4 microservice độc lập + PostgreSQL**, container hóa và **đang chạy thật trên cụm Kubernetes tự dựng bằng kubeadm trên VirtualBox** (không phải cloud, không phải minikube) — kèm đầy đủ NetworkPolicy (L3/L4 + L7), PersistentVolume, và HorizontalPodAutoscaler.
 
+> 📐 Sửa/thêm manifest K8s? Đọc [`k8s/CONVENTIONS.md`](k8s/CONVENTIONS.md) trước — quy chuẩn bắt buộc
+> (SecurityContext, resources, port, pattern 4-container, checklist verify...) để mọi thay đổi sau
+> này (kể cả do AI khác làm) vẫn nhất quán với phần đã có.
+
 ## ✅ Trạng thái hiện tại: ĐANG CHẠY TRÊN K8S — NetworkPolicy + PVC + HPA + PostgreSQL + CronJob + Kustomize + Helm
 
 | | |
@@ -12,7 +16,7 @@
 | Database | PostgreSQL 16 (1 instance, 3 database logic: `babymilk_products/users/orders`) |
 | Deploy bằng | Kustomize (chính thức, prod) — `kubectl apply -k k8s/overlays/prod`; **Helm chart song song** (`k8s/helm/babymilk-shop/`) để demo install/upgrade/rollback trong namespace riêng, xem mục "Helm chart" bên dưới |
 | Admin | `admin@babymilk.local` / `admin12345` |
-| Dữ liệu | 14 sản phẩm sữa mẫu, seed tự động |
+| Dữ liệu | 14 sản phẩm sữa mẫu, seed tự động, kèm ảnh minh hoạ theo brand (`/images/*.png`) |
 
 ```
 NAME                               READY   STATUS    RESTARTS   NODE
@@ -40,6 +44,7 @@ user-service-57f98dc67-4qdq4       3/3     Running   0          k8s-worker1
 - [x] **StorageClass động** — cài `local-path-provisioner`, verify dynamic provisioning + persistence thật (pod hoàn toàn khác, không ghi gì, vẫn đọc được data cũ). Chi tiết: `lab/lab_4.4.txt`.
 - [ ] **Ingress** — thử bật Cilium Ingress Controller, gặp sự cố hạ tầng thật (agent Cilium trên node worker kẹt >10 phút, phải reboot node để khắc phục) → đã **rollback**, chưa hoàn thành. Chi tiết đầy đủ (nguyên nhân + cách khắc phục): `lab/lab_4.2.txt`.
 - [x] **12-Factor App** — soát lại theo [12factor.net](https://www.12factor.net/), đạt 11/12 (Config, Backing services, Build/release/run, Processes stateless, Port binding, Concurrency, Dev/prod parity, Logs, Admin processes đều đạt). Điểm thiếu duy nhất (**#9 Disposability** — graceful shutdown) đã fix: cả 4 service bắt `SIGTERM`/`SIGINT`, đóng HTTP server + connection pool trước khi thoát thay vì bị kill đột ngột. Verify thật bằng `kubectl delete pod` giữa lúc rolling update, thấy đúng log `SIGTERM received, shutting down gracefully...` → `server + db pool closed, exiting`.
+- [x] **Ảnh sản phẩm** — 7 ảnh PNG theo brand (`frontend/public/images/*.png`), migration `002_update_image_urls.sql` cập nhật `image_url` cho 14 sản phẩm đang có sẵn trong DB (chạy tự động qua `schema_migrations`, không cần thao tác tay). Bump `product-service:2.3`, `frontend:1.2`. Verify thật: log pod có `applied migration 002_update_image_urls.sql`, `curl /api/products` trả đúng `imageUrl`, `curl /images/nan.png` trả `HTTP 200, content-type: image/png`.
 
 ## 🖥️ Môi trường hạ tầng (K8s cluster)
 
@@ -181,10 +186,10 @@ Toàn bộ quy trình dưới đây đã thực hiện thật và app đang ch�
 
 ```bash
 cd baby-milk-shop
-docker build -t babymilk/product-service:2.2 ./services/product-service
+docker build -t babymilk/product-service:2.3 ./services/product-service
 docker build -t babymilk/user-service:2.1    ./services/user-service
 docker build -t babymilk/order-service:2.1   ./services/order-service
-docker build -t babymilk/frontend:1.1        ./services/frontend
+docker build -t babymilk/frontend:1.2        ./services/frontend
 docker pull postgres:16-alpine
 ```
 
@@ -195,7 +200,7 @@ Mỗi image backend ~58MB (`node:22-alpine`, multi-stage, non-root `USER node`; 
 Chỉ cần đưa vào node **worker** (vì master bị taint, không nhận app pod):
 
 ```bash
-docker save babymilk/product-service:2.2 babymilk/user-service:2.1 babymilk/order-service:2.1 babymilk/frontend:1.1 postgres:16-alpine -o babymilk-images.tar
+docker save babymilk/product-service:2.3 babymilk/user-service:2.1 babymilk/order-service:2.1 babymilk/frontend:1.2 postgres:16-alpine -o babymilk-images.tar
 scp babymilk-images.tar bachpt1@192.168.56.102:/tmp/
 ssh bachpt1@192.168.56.102 "sudo ctr -n k8s.io images import /tmp/babymilk-images.tar"
 ```
