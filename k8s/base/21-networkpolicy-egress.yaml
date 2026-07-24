@@ -1,0 +1,131 @@
+# Lab 4.3 — NetworkPolicy Isolation (Egress).
+# Mặc định K8s KHÔNG hạn chế egress — pod nào cũng gọi ra internet thoải mái trừ khi có policy chặn.
+# Ở đây: default-deny-egress cho toàn namespace, rồi mở đúng luồng cần (DNS + gọi nội bộ),
+# KHÔNG mở đường ra internet cho bất kỳ backend nào (0.0.0.0/0 bị chặn ngầm định vì không có rule nào cho phép).
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: babymilk
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: babymilk
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+---
+# frontend: chỉ được gọi ra 3 backend, KHÔNG được gọi ra bất kỳ đâu khác (kể cả internet)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress-to-backends
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: product-service
+    ports:
+    - port: 4001
+  - to:
+    - podSelector:
+        matchLabels:
+          app: user-service
+    ports:
+    - port: 4002
+  - to:
+    - podSelector:
+        matchLabels:
+          app: order-service
+    ports:
+    - port: 4003
+---
+# 3 backend: chỉ được gọi ra Postgres — KHÔNG được gọi ra internet (0.0.0.0/0)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backends-egress-to-postgres
+  namespace: babymilk
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values: ["product-service", "user-service", "order-service"]
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - port: 5432
+---
+# order-service: thêm quyền gọi sang product-service (/internal/checkout|restock)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-order-egress-to-product
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: order-service
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: product-service
+    ports:
+    - port: 4001
+---
+# stock-monitor (CronJob): chỉ được gọi sang product-service, không ra internet
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-stock-monitor-egress
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: stock-monitor
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: product-service
+    ports:
+    - port: 4001

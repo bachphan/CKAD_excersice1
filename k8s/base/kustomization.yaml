@@ -11,7 +11,9 @@ resources:
   - 12-order-service.yaml
   - 13-frontend.yaml
   - 20-networkpolicy.yaml
+  - 21-networkpolicy-egress.yaml
   - 30-pv-pvc.yaml
   - 40-hpa.yaml
   - 50-postgres.yaml
   - 60-stock-monitor.yaml
+  - 70-resourcequota.yaml

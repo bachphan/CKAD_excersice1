@@ -1,0 +1,16 @@
+# Lab 3.4 — Namespace Quotas. Size dựa trên tổng requests/limits thực tế đang dùng (~300m/850m CPU,
+# ~350Mi/1216Mi RAM) + margin đủ cho HPA scale product-service tới 3 pod, rolling update tạm surge
+# thêm 1 pod, và CronJob "stock-monitor" spawn Job ngắn hạn — vẫn nằm trong ngân sách node thật (~1.9 CPU/3.2GB).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: babymilk-quota
+  namespace: babymilk
+spec:
+  hard:
+    requests.cpu: "1200m"
+    requests.memory: "1600Mi"
+    limits.cpu: "1800m"
+    limits.memory: "2800Mi"
+    pods: "20"
+    persistentvolumeclaims: "3"

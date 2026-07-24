@@ -32,6 +32,11 @@ user-service-7b4bd6cf99-74g76      1/1     Running   2          k8s-worker1
 - [x] **Job/CronJob** — `stock-monitor` (CronJob, chạy 8h sáng mỗi ngày) tự tạo Job gọi API `product-service` cảnh báo sản phẩm tồn kho thấp. Consumer mới → đã xin quyền tường minh qua CiliumNetworkPolicy (không tái dùng label service khác, tránh dính nhầm vào Service selector thật).
 - [x] **Kustomize** — `k8s/` tái cấu trúc thành `base/` + `overlays/{prod,dev}`. `prod` = đúng cấu hình đang chạy thật (verify bằng `kubectl diff -k` = 0 khác biệt trước khi chuyển hẳn cách deploy). `dev` = namespace/NodePort/HPA riêng, đã validate render đúng nhưng **chưa apply lên cluster** (không đủ tài nguyên chạy song song 2 bộ đầy đủ trên node worker duy nhất).
 - [x] **Rolling update + Rollback** đã test thật trên `product-service` (v2.0→v2.1→giả lập bản lỗi→rollback), **Blue/Green** đã test thật trên `frontend` (banner xanh lá đổi qua Service selector, đã trả về nguyên trạng sau demo). Chi tiết: `lab/lab_2.1.txt`, `lab/lab_2.2.txt`.
+- [x] **SecurityContext** — cả 4 Deployment chạy `runAsNonRoot`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`. Verify: `touch` vào root filesystem bị chặn (`Read-only file system`), checkout đầy đủ luồng vẫn hoạt động 100%. Chi tiết: `lab/lab_3.2.txt`.
+- [x] **ResourceQuota** — `babymilk-quota` (sized theo usage thật + margin, không chặn nhầm pod đang chạy), verify bằng cách tạo pod xin vượt quota → bị từ chối đúng luật. Chi tiết: `lab/lab_3.4.txt`.
+- [x] **NetworkPolicy Egress** — `default-deny-egress` + allow DNS + allow đúng luồng nội bộ; backend **không ra được internet** (verify: request treo tới timeout, không có response). Chi tiết: `lab/lab_4.3.txt`.
+- [x] **StorageClass động** — cài `local-path-provisioner`, verify dynamic provisioning + persistence thật (pod hoàn toàn khác, không ghi gì, vẫn đọc được data cũ). Chi tiết: `lab/lab_4.4.txt`.
+- [ ] **Ingress** — thử bật Cilium Ingress Controller, gặp sự cố hạ tầng thật (agent Cilium trên node worker kẹt >10 phút, phải reboot node để khắc phục) → đã **rollback**, chưa hoàn thành. Chi tiết đầy đủ (nguyên nhân + cách khắc phục): `lab/lab_4.2.txt`.
 
 ## 🖥️ Môi trường hạ tầng (K8s cluster)
 
@@ -51,6 +56,8 @@ Cluster Kubernetes 2 node dựng bằng `kubeadm` trên 2 VM VirtualBox (không 
 
 - **CNI**: Cilium v1.19.3 (kèm Cilium Envoy DaemonSet) — thay cho Calico, dùng cho cả L3/L4 NetworkPolicy chuẩn K8s lẫn L7 HTTP-aware CiliumNetworkPolicy.
 - **metrics-server**: v0.8.1, cài thêm cho HPA (không có sẵn trong kubeadm), patch `--kubelet-insecure-tls` vì kubelet dùng cert tự ký.
+- **StorageClass**: `local-path` (Rancher `local-path-provisioner`) — dynamic provisioning thật, cài thêm vì cluster kubeadm không có sẵn.
+- **Helm**: cài trên node master (`helm version` v3.21.3) — chỉ dùng cho ví dụ luyện tập riêng (`lab/lab_5.4.txt`), KHÔNG dùng để quản lý baby-milk-shop (vẫn dùng Kustomize).
 - **Network**: mỗi VM có 2 network adapter — NAT (ra internet) + Host-only Adapter (`192.168.56.0/24`, dùng cho giao tiếp giữa các node và từ máy host vào cluster).
 - **Vì master bị taint `control-plane:NoSchedule`**, toàn bộ app (kể cả baby-milk-shop) chỉ chạy được trên **node worker duy nhất** — ngân sách tài nguyên thực tế cho app: ~1.9 CPU / ~3.2GB RAM.
 - Không có image registry riêng — image build bằng Docker Desktop trên máy dev (Windows), sau đó `docker save` → `scp` → `ctr -n k8s.io images import` trực tiếp vào containerd của node worker.
@@ -254,10 +261,12 @@ k8s/
 │   ├── 11-user-service.yaml
 │   ├── 12-order-service.yaml
 │   ├── 13-frontend.yaml         # Service NodePort :30080
-│   ├── 20-networkpolicy.yaml    # NetworkPolicy L3/L4 + CiliumNetworkPolicy L7
+│   ├── 20-networkpolicy.yaml    # NetworkPolicy Ingress L3/L4 + CiliumNetworkPolicy L7
+│   ├── 21-networkpolicy-egress.yaml  # NetworkPolicy Egress (default-deny + allow DNS/nội bộ)
 │   ├── 30-pv-pvc.yaml           # PV/PVC Postgres (hostPath static)
 │   ├── 40-hpa.yaml              # HPA product-service (min1/max3, CPU 50%)
-│   └── 60-stock-monitor.yaml    # CronJob cảnh báo tồn kho thấp
+│   ├── 60-stock-monitor.yaml    # CronJob cảnh báo tồn kho thấp
+│   └── 70-resourcequota.yaml    # ResourceQuota namespace babymilk
 └── overlays/
     ├── prod/kustomization.yaml  # resources: [../../base], KHÔNG patch — đúng cấu hình chạy thật
     └── dev/kustomization.yaml   # namespace babymilk-dev, NodePort 30090, HPA max=1, CronJob suspend
@@ -269,11 +278,11 @@ Mỗi Deployment backend: `replicas: 1`, `imagePullPolicy: Never` (image chỉ c
 ### Việc có thể làm tiếp (chưa làm — ngoài phạm vi hiện tại)
 
 - [ ] `PodDisruptionBudget`.
-- [ ] Ingress (Cilium có sẵn Ingress support) thay cho NodePort, dùng domain đẹp thay vì gõ IP:port.
+- [ ] Ingress (Cilium có sẵn Ingress support) thay cho NodePort — đã thử 1 lần, gặp sự cố hạ tầng (Cilium agent kẹt), đã rollback. Cần thử lại cẩn thận hơn (xem `lab/lab_4.2.txt` để biết chi tiết + rủi ro).
 - [ ] Load test mạnh hơn (nhiều pod song song / công cụ như `k6`, `hey`) để thực sự quan sát HPA scale-up — app hiện tại quá nhẹ nên chưa chạm ngưỡng CPU 50% trong test thủ công (đã scale tay lên 10 replicas để test riêng phần scale, xem `lab/lab_2.3.txt`).
 - [ ] Thêm init container `wait-for-postgres` cho 3 backend — hiện tại nếu Postgres chưa sẵn sàng lúc pod backend start, pod sẽ crash rồi tự retry theo cơ chế restart mặc định của K8s (chấp nhận được, nhưng init container sẽ gọn hơn).
 - [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật, và có đủ tài nguyên apply thật overlay `dev` song song với `prod`.
-- [ ] Tăng `timeoutSeconds` cho readiness/liveness probe (hiện dùng mặc định 1s) — phát hiện lúc rolling update (`lab/lab_2.1.txt`) probe timeout giả do CPU limit chặt, gây restart không cần thiết dù app vẫn hoạt động bình thường.
+- [x] ~~Tăng `timeoutSeconds` cho readiness/liveness probe~~ — đã fix, `timeoutSeconds: 3` cho cả 4 Deployment (Lab 3.2).
 
 ## Cấu trúc thư mục
 
