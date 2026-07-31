@@ -11,11 +11,17 @@ tự dọn dẹp resource demo, và verify app thật không bị ảnh hưởng
 ```bash
 # Script đã có sẵn trên master tại ~/ckad-demo/ (bản gốc trong thư mục này)
 ssh bachpt1@192.168.56.103
+
+# Cách 1 — chạy TỪNG Day riêng
 bash ~/ckad-demo/run-day1.sh    # Day 1 (19 check)
 bash ~/ckad-demo/run-day2.sh    # Day 2 (32 check, đụng app thật — tự revert về baseline)
 bash ~/ckad-demo/run-day3.sh    # Day 3 (15 check)
 bash ~/ckad-demo/run-day4.sh    # Day 4 (22 check — Lab 4.2 Ingress chạy live thật qua ingress-nginx)
 bash ~/ckad-demo/run-day5.sh    # Day 5 (22 check)
+
+# Cách 2 — chạy LIÊN TỤC cả 20 lab (110 check), có giải thích CKAD domain trước mỗi
+# Day, dừng hỏi "Enter" giữa mỗi Day, tự chạy restore-to-baseline.sh ở cuối (~10-15 phút)
+bash ~/ckad-demo/run-all-labs.sh
 ```
 
 - An toàn chạy lại nhiều lần (idempotent, mỗi lab đều có Bước 0 cleanup).
@@ -52,6 +58,7 @@ bash ~/ckad-demo/run-day5.sh    # Day 5 (22 check)
 | `Day5-ObservabilityExamPrep.md` | Lab 5.1-5.4 | An toàn, Lab 5.2 chỉ đọc (không đổi gì) |
 | `restore-to-baseline.sh` | Script khôi phục tổng | Chạy sau demo (hoặc bất cứ lúc nào nghi ngờ cluster bị lệch) |
 | `run-day1.sh` → `run-day5.sh` | Script chạy FULL tự động từng Day | Đã kiểm chứng PASS 100% trên cluster, xem mục phía trên |
+| `run-all-labs.sh` | Chạy LIÊN TỤC cả 20 lab + giải thích CKAD domain + tự restore cuối | 110/110 check PASS thật trên cluster (chạy full ~10-15 phút) |
 
 ## Nguyên tắc thiết kế
 

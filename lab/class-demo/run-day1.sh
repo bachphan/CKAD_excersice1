@@ -376,3 +376,5 @@ else
   red "❌ DAY 1: $FAIL/$((PASS+FAIL)) CHECK FAIL — xem log phía trên"
 fi
 echo "============================================================"
+
+exit "$FAIL"

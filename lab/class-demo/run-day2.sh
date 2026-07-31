@@ -308,3 +308,5 @@ else
   red "❌ DAY 2: $FAIL/$((PASS+FAIL)) CHECK FAIL — CHẠY restore-to-baseline.sh NGAY"
 fi
 echo "============================================================"
+
+exit "$FAIL"
