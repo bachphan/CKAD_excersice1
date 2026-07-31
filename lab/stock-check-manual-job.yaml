@@ -1,0 +1,38 @@
+# Job test thủ công cho tính năng "cảnh báo tồn kho thấp" — KHÔNG nằm trong k8s/base (không phải
+# resource permanent). Dùng khi cần test lại logic script trước khi tin tưởng CronJob tự động.
+# Chạy: kubectl apply -f stock-check-manual-job.yaml
+# Xoá sau khi test xong (hoặc để ttlSecondsAfterFinished tự dọn sau 300s):
+#   kubectl delete job stock-check-manual -n babymilk
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stock-check-manual
+  namespace: babymilk
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: stock-monitor
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: stock-check
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== Stock check $(date) ==="
+          wget -qO- http://product-service:4001/api/products?limit=100 > /tmp/products.json || exit 1
+          echo "Sản phẩm tồn kho dưới 100 (demo bằng grep, không phải JSON parser đầy đủ):"
+          grep -o '"name":"[^"]*","brand":"[^"]*"[^}]*"stock":[0-9]\{1,2\}[,}]' /tmp/products.json | head -20
+          echo "=== Done ==="
+        resources:
+          requests:
+            cpu: 20m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi

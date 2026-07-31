@@ -1,0 +1,62 @@
+=== Lab 5.2 — CLI Observability ===
+=== Chạy trực tiếp trên pod THẬT của babymilk (không cần dựng gì thêm) ===
+
+=== kubectl logs -c (chỉ định container — quan trọng với pod nhiều container như init-sidecar-demo
+    ở Lab 1.2; với pod 1 container như product-service thì không bắt buộc nhưng vẫn nên quen dùng) ===
+$ kubectl logs -n babymilk deploy/product-service --tail=5
+  constraint: undefined,
+  file: 'parse_clause.c',
+  line: '3008',
+  routine: 'transformDistinctClause'
+}
+
+=== kubectl logs --previous (log của LẦN CHẠY TRƯỚC container hiện tại — chỉ có nếu container đã
+    từng bị restart; cực kỳ quan trọng khi debug CrashLoopBackOff vì log hiện tại có thể rỗng do
+    container mới restart chưa kịp in gì) ===
+$ kubectl logs -n babymilk product-service-f785cb-6jdt9 --previous
+product-service listening on http://localhost:4001
+(đây là dòng cuối log của LẦN CHẠY TRƯỚC — xác nhận lần trước container tắt SAU KHI đã start thành
+ công, không phải crash lúc khởi động, khác hẳn thông tin lấy được nếu chỉ xem log hiện tại)
+
+=== kubectl get events (namespace, sort theo thời gian — xem "chuyện gì đã xảy ra" theo trình tự) ===
+$ kubectl get events -n babymilk --sort-by=.lastTimestamp | tail -8
+11m    Normal    ScalingReplicaSet   deployment/product-service    Scaled down replica set ... to 1 from 3
+11m    Normal    SuccessfulDelete    replicaset/product-service-f785cb   Deleted pod: ...
+11m    Normal    SuccessfulRescale   horizontalpodautoscaler/product-service-hpa   New size: 1; reason: All metrics below target
+6m43s  Warning   Unhealthy           pod/frontend-69684497b5-bs2np       Liveness probe failed: context deadline exceeded
+6m34s  Warning   Unhealthy           pod/user-service-86c9d94d9c-rkz5s   Liveness probe failed: context deadline exceeded
+2m39s  Warning   Unhealthy           pod/order-service-c66f9c869-clgpt   Liveness probe failed: context deadline exceeded
+
+=> Đây là dấu vết THẬT của sự cố Cilium/reboot node worker vừa xảy ra (xem lab_4.2.txt, lab_4.4.txt)
+   — trong lúc network bị gián đoạn để reboot, các probe httpGet timeout thật (không phải app lỗi),
+   đúng loại sự cố "Unhealthy do mạng chậm/gián đoạn" đã học từ Lab 2.1. "kubectl get events" là công
+   cụ ĐẦU TIÊN nên xem khi nghi ngờ có chuyện gì đó xảy ra gần đây nhưng không rõ nguyên nhân, vì nó
+   ghi lại DÒNG THỜI GIAN của mọi hành động (Scheduled, Pulled, Started, Unhealthy, Killing...) mà
+   `kubectl get pods` (chỉ cho trạng thái HIỆN TẠI) không thể hiện được.
+
+=== kubectl top pods / top nodes (real-time resource usage, cần metrics-server) ===
+$ kubectl top pods -n babymilk
+NAME                            CPU(cores)   MEMORY(bytes)
+frontend-69684497b5-bs2np       1m           21Mi
+order-service-c66f9c869-clgpt   1m           43Mi
+postgres-65f4dddc66-zv676       15m          54Mi
+product-service-f785cb-6jdt9    3m           22Mi
+user-service-86c9d94d9c-rkz5s   4m           53Mi
+
+$ kubectl top nodes
+NAME          CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+bachpt1       520m         26%    1863Mi          56%
+k8s-worker1   208m         10%    1730Mi          52%
+
+=== Bài học tổng hợp ===
+1. Thứ tự chẩn đoán hợp lý khi có sự cố không rõ nguyên nhân: (1) `kubectl get events --sort-by
+   =.lastTimestamp` xem TIMELINE tổng quan trước → (2) `kubectl describe pod` xem chi tiết 1 resource
+   cụ thể → (3) `kubectl logs` (kèm `--previous` nếu container đã restart) xem log ứng dụng thật.
+2. `kubectl logs --previous` chỉ hoạt động khi container CÒN restart history (Restart Count > 0) —
+   nếu container chưa từng restart, lệnh này báo lỗi "previous terminated container ... not found".
+3. `kubectl top` phụ thuộc `metrics-server` — nếu chưa cài (như cluster này lúc đầu), lệnh báo lỗi
+   "Metrics API not available" thay vì số liệu — không phải bug của `kubectl top`, mà do thiếu thành
+   phần phụ trợ (đã cài ở phần HPA, xem work_done.md mục 14).
+4. Events có TTL giới hạn (mặc định K8s giữ event khoảng 1 giờ) — event cũ hơn sẽ tự biến mất, nên
+   nếu cần điều tra sự cố xảy ra lâu hơn 1 giờ trước, `kubectl get events` sẽ không còn dấu vết, phải
+   dựa vào log ứng dụng hoặc hệ thống giám sát ngoài (Prometheus/Loki...) lưu trữ dài hạn hơn.

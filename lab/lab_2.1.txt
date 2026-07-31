@@ -1,0 +1,95 @@
+=== Lab 2.1 — Rolling Update & Rollback ===
+=== Áp dụng THẬT lên Deployment product-service trong namespace babymilk ===
+
+=== Bước 1: sửa code thật để có v2.1 phân biệt được với v2.0 ===
+services/product-service/src/server.js:
+  Trước: app.get('/healthz', (req,res) => res.json({status:'ok', service:'product-service'}))
+  Sau:   app.get('/healthz', (req,res) => res.json({status:'ok', service:'product-service', version:'2.1'}))
+
+$ docker build -t babymilk/product-service:2.1 ./services/product-service
+$ docker save babymilk/product-service:2.1 -o product-v21.tar
+$ scp product-v21.tar bachpt1@192.168.56.102:/tmp/
+$ ssh bachpt1@192.168.56.102 "sudo ctr -n k8s.io images import /tmp/product-v21.tar"
+
+=== Bước 2: Rolling update thật, v2.0 -> v2.1 ===
+$ kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.1 -n babymilk
+deployment.apps/product-service image updated
+
+$ kubectl rollout status deployment/product-service -n babymilk
+Waiting for deployment "product-service" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "product-service" rollout to finish: 1 old replicas are pending termination...
+deployment "product-service" successfully rolled out
+
+=== Verify version mới thật sự chạy ===
+/healthz KHÔNG nằm trong path được phép qua CiliumNetworkPolicy (chỉ /api/* và /internal/* được mở)
+-> gọi từ frontend bị chặn đúng luật:
+$ kubectl exec -n babymilk deploy/frontend -- wget -qO- http://product-service:4001/healthz
+wget: server returned error: HTTP/1.1 403 Forbidden          <- đúng như thiết kế, không phải lỗi
+
+Verify bằng cách gọi loopback NGAY TRONG chính pod đó (không qua CNI/NetworkPolicy):
+$ kubectl get deploy product-service -o jsonpath='{.spec.template.spec.containers[0].image}'
+docker.io/babymilk/product-service:2.1
+$ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:4001/healthz
+{"status":"ok","service":"product-service","version":"2.1"}
+
+=== Bước 3: Mô phỏng deploy lỗi (image tag không tồn tại) ===
+$ kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:bad-tag -n babymilk
+deployment.apps/product-service image updated
+
+$ kubectl rollout status deployment/product-service -n babymilk --timeout=20s
+Waiting for deployment "product-service" rollout to finish: 1 old replicas are pending termination...
+error: timed out waiting for the condition          <- ĐÚNG như mong đợi, pod mới không lên nổi
+
+$ kubectl get pods -n babymilk -l app=product-service
+NAME                               READY   STATUS              RESTARTS   AGE
+product-service-59cf59d497-jp65f   0/1     ErrImageNeverPull   0          20s   <- pod mới, kẹt (đúng)
+product-service-65cc887fdd-968st   0/1     Running             0          80s   <- pod cũ (v2.1) vẫn còn
+
+Trong lúc đó, app vẫn phục vụ được (rolling update mặc định không giết pod cũ khi pod mới chưa Ready):
+$ curl http://192.168.56.102:30080/api/products
+HTTP 200 (app không downtime dù có 1 revision lỗi đang chờ)
+
+--- Sự cố phụ phát hiện được (không liên quan bad-tag, đáng ghi lại) ---
+Pod CŨ (65cc887fdd, đang chạy v2.1 tốt) bất ngờ bị:
+  Warning  Unhealthy  Liveness probe failed: context deadline exceeded (Client.Timeout exceeded)
+  Normal   Killing    Container product-service failed liveness probe, will be restarted
+Nguyên nhân nghi ngờ: CPU limit 150m khá chặt cho readinessProbe/livenessProbe không set timeoutSeconds
+(mặc định 1s) — dưới tải/throttle nhẹ, response có thể chậm hơn 1s khiến probe timeout giả (false
+positive), kubelet tưởng app chết nên restart container dù app thực ra vẫn hoạt động bình thường.
+Container tự khởi động lại (Restart Count: 1) và phục hồi Ready sau ~10s, không cần can thiệp tay.
+=> Bài học: với app Node/Express cold-start hoặc dưới CPU limit chặt, nên set timeoutSeconds cao hơn
+   mặc định (vd 3-5s thay vì 1s) cho probe để tránh restart giả do "chậm" chứ không phải "chết".
+
+=== Bước 4: Rollback ===
+$ kubectl rollout history deployment/product-service -n babymilk
+REVISION  CHANGE-CAUSE
+1         <none>
+...
+6         <none>
+(CHANGE-CAUSE toàn <none> vì không dùng --record hay annotate change-cause -- nên làm việc này
+ trong thực tế để sau này biết mỗi revision đổi gì mà không phải đoán)
+
+$ kubectl rollout undo deployment/product-service -n babymilk
+deployment.apps/product-service rolled back
+Waiting for deployment "product-service" rollout to finish: 1 old replicas are pending termination...
+deployment "product-service" successfully rolled out
+
+=== Verify cuối cùng: quay lại đúng v2.1 (bản tốt gần nhất trước "bad"), không phải v2.0 ===
+$ kubectl get deploy product-service -o jsonpath='{.spec.template.spec.containers[0].image}'
+docker.io/babymilk/product-service:2.1
+$ kubectl get pods -n babymilk -l app=product-service
+NAME                               READY   STATUS    RESTARTS   AGE
+product-service-65cc887fdd-968st   1/1     Running   1          2m19s
+$ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:4001/healthz
+{"status":"ok","service":"product-service","version":"2.1"}
+
+=== Bài học tổng hợp ===
+1. "kubectl rollout undo" (không chỉ định --to-revision) luôn quay về REVISION LIỀN TRƯỚC, không phải
+   "bản gốc" hay "bản tốt nhất" — ở đây may mắn đúng ý (revision liền trước "bad" chính là "2.1" tốt),
+   nhưng nếu có nhiều lần deploy lỗi liên tiếp thì phải dùng --to-revision=N cho chính xác.
+2. Rolling update mặc định (maxSurge 25%, maxUnavailable 25%, làm tròn với replicas=1 -> surge thêm
+   1 pod, không giảm pod cũ) khiến 1 lần deploy lỗi KHÔNG gây downtime — pod cũ tiếp tục phục vụ tới
+   khi pod mới thật sự Ready. Đây chính là lý do rolling update là chiến lược mặc định an toàn.
+3. NetworkPolicy L7 (CiliumNetworkPolicy) chặn cả /healthz nếu không nằm trong path được liệt kê —
+   cần nhớ điều này khi muốn "curl thử healthz từ pod khác" để verify, dùng loopback (exec vào chính
+   pod đó) thay vì gọi chéo qua pod khác nếu path chưa được NetworkPolicy cho phép.

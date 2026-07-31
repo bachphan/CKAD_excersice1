@@ -1,0 +1,144 @@
+=== Lab 2.4 — Kustomize Overlay ===
+=== Tái cấu trúc THẬT k8s/ của dự án: từ 12 file phẳng -> base/ + overlays/{prod,dev} ===
+=== Cách deploy chính thức từ giờ: "kubectl apply -k k8s/overlays/prod" thay vì "kubectl apply -f k8s/" ===
+
+=== Cấu trúc mới ===
+k8s/
+├── base/                        <- toàn bộ 11 manifest gốc (namespace, configmap, 4 deployment+svc,
+│   ├── kustomization.yaml           networkpolicy, pv-pvc, hpa, postgres, cronjob) + kustomization.yaml
+│   ├── 00-namespace.yaml
+│   ├── 01-configmap.yaml
+│   ├── 02-secret.yaml.example   <- vẫn KHÔNG đưa secret thật vào kustomization.yaml (xem bên dưới)
+│   ├── 10-product-service.yaml  <- cập nhật khớp image thật đang chạy (:2.1, từ Lab 2.1)
+│   ├── ...
+│   └── 60-stock-monitor.yaml    <- chỉ còn CronJob (Job test 1 lần tách ra lab/stock-check-manual-job.yaml)
+└── overlays/
+    ├── prod/kustomization.yaml  <- resources: [../../base], KHÔNG patch gì (= đúng cấu hình chạy thật)
+    └── dev/kustomization.yaml   <- namespace babymilk-dev, NodePort 30090, HPA max=1, CronJob suspend
+
+=== base/kustomization.yaml ===
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 01-configmap.yaml
+  - 10-product-service.yaml
+  - 11-user-service.yaml
+  - 12-order-service.yaml
+  - 13-frontend.yaml
+  - 20-networkpolicy.yaml
+  - 30-pv-pvc.yaml
+  - 40-hpa.yaml
+  - 50-postgres.yaml
+  - 60-stock-monitor.yaml
+(02-secret.yaml KHÔNG có trong list — secret vẫn tạo/apply riêng bằng tay, không đi qua kustomize,
+ vì file thật bị gitignore, "kubectl apply -f base/02-secret.yaml" chạy độc lập 1 lần)
+
+=== overlays/prod/kustomization.yaml ===
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+=== overlays/dev/kustomization.yaml ===
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: babymilk-dev
+resources:
+  - ../../base
+patches:
+  - target: {kind: Service, name: frontend}
+    patch: |-
+      - op: replace
+        path: /spec/ports/0/nodePort
+        value: 30090
+  - target: {kind: HorizontalPodAutoscaler, name: product-service-hpa}
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 1
+  - target: {kind: CronJob, name: stock-monitor}
+    patch: |-
+      - op: add                          # LƯU Ý: "add", không phải "replace" — field "suspend"
+        path: /spec/suspend                # chưa tồn tại trong base (mặc định false ngầm định),
+        value: true                        # "replace" trên field chưa tồn tại sẽ LỖI theo JSON Patch.
+
+=== Transcript: validate render trước khi đụng cluster ===
+$ kubectl kustomize overlays/prod > /tmp/prod-rendered.yaml
+(không lỗi, 764 dòng YAML — đủ 11 resource của base)
+
+$ kubectl kustomize overlays/dev > /tmp/dev-rendered.yaml
+(không lỗi)
+$ grep -A3 'kind: Namespace' /tmp/dev-rendered.yaml
+kind: Namespace
+metadata:
+  name: babymilk-dev                       <- đúng, namespace transformer hoạt động
+$ grep -B3 'nodePort: 30090' /tmp/dev-rendered.yaml
+  - nodePort: 30090                        <- đúng
+$ grep 'maxReplicas' /tmp/dev-rendered.yaml
+  maxReplicas: 1                           <- đúng
+$ grep 'suspend: true' /tmp/dev-rendered.yaml
+  suspend: true                            <- đúng
+
+=== Transcript: so sánh prod overlay với cluster ĐANG CHẠY THẬT trước khi thay đổi cách deploy ===
+$ kubectl diff -k overlays/prod
+(LẦN 1 — phát hiện 2 khác biệt thật, phải sửa trước khi tin tưởng chuyển hẳn sang kustomize):
+
+1) Deployment product-service: file base ghi image ":2.0", nhưng cluster đang chạy ":2.1"
+   (từ Lab 2.1 làm rolling update bằng "kubectl set image" trực tiếp, QUÊN cập nhật lại file YAML
+   local). Nếu không sửa, lần sau "kubectl apply -k overlays/prod" sẽ VÔ TÌNH rollback về :2.0!
+   => Fix: sửa base/10-product-service.yaml image thành :2.1.
+
+2) Job "stock-check-manual" bị kustomize coi là resource CẦN TẠO MỚI (vì Job này vốn là test 1 lần,
+   không nên nằm trong base permanent — để trong kustomization sẽ cố tạo lại mỗi lần apply).
+   => Fix: bỏ Job này khỏi base/60-stock-monitor.yaml (chỉ giữ CronJob), chuyển sang file riêng
+      lab/stock-check-manual-job.yaml, apply thủ công khi cần test lại, không qua kustomize.
+
+$ kubectl diff -k overlays/prod        (LẦN 2, sau khi fix 2 điểm trên)
+(không có output gì cả -> diff rỗng, xác nhận base khớp CHÍNH XÁC 100% với cluster đang chạy)
+
+=== Áp dụng thật, chuyển hẳn sang deploy bằng kustomize ===
+$ kubectl apply -k overlays/prod
+namespace/babymilk unchanged
+configmap/babymilk-config unchanged
+...
+deployment.apps/product-service configured     <- "configured" không phải "unchanged": do
+cronjob.batch/stock-monitor configured             kubectl ghi lại annotation last-applied-configuration
+horizontalpodautoscaler.autoscaling/... configured  mới (khác cấu trúc do đi qua kustomize build),
+networkpolicy... configured (x3)                    KHÔNG phải thay đổi spec thật (diff đã xác nhận = 0
+...                                                 trước đó, và pod KHÔNG bị restart — xem dưới)
+
+$ kubectl get pods -n babymilk
+NAME                               READY   STATUS    RESTARTS   AGE
+frontend-5f7f9c77f-67mtb           1/1     Running   0          6m44s
+order-service-6bfd6b99f-rjpb4      1/1     Running   2          19m
+postgres-65f4dddc66-zv676          1/1     Running   0          19m
+product-service-65cc887fdd-968st   1/1     Running   1          12m    <- pod CŨ, AGE không đổi,
+user-service-7b4bd6cf99-74g76      1/1     Running   2          19m        xác nhận KHÔNG bị restart
+
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200
+
+=== Dọn dẹp: xoá 12 file .yaml phẳng cũ (đã thay thế hoàn toàn bằng base/+overlays/) ===
+$ rm 00-namespace.yaml 01-configmap.yaml 10-product-service.yaml ... 60-stock-monitor.yaml
+$ ls k8s/
+base
+overlays
+
+=== dev overlay: CHƯA apply lên cluster thật (chỉ validate bằng "kubectl kustomize") ===
+Lý do: cluster chỉ có ~1.9 CPU/3.2GB khả dụng trên node worker duy nhất, không đủ chạy thêm 1 bộ
+"babymilk-dev" đầy đủ (kể cả Postgres riêng) song song với bản prod đang phục vụ thật. Overlay dev
+vẫn có giá trị: đã verify render đúng cấu trúc (namespace/NodePort/HPA/CronJob patch đều chính xác),
+sẵn sàng dùng thật khi có thêm node hoặc khi prod tạm ngừng để nhường tài nguyên cho dev test.
+
+=== Bài học tổng hợp ===
+1. Kustomize không "diễn giải" YAML theo nghĩa template (không có {{ biến }} như Helm) — nó làm việc
+   bằng CÁCH GHÉP (resources) + VÁ (patches, dạng JSON Patch RFC 6902 hoặc strategic merge patch) lên
+   YAML thuần. Ưu điểm: dễ đọc, dễ debug bằng "kubectl kustomize" xem trước khi apply, không cần học
+   cú pháp template riêng.
+2. "kubectl diff -k" TRƯỚC khi chuyển đổi cách deploy là bước bắt buộc, không phải tuỳ chọn — ở đây
+   nó bắt được đúng 1 lỗi thật (file local bị lệch phiên bản image so với cluster) mà nếu bỏ qua sẽ
+   gây ROLLBACK NGOÀI Ý MUỐN (từ :2.1 tốt về lại :2.0) ngay lần đầu chuyển sang kustomize.
+3. JSON Patch "replace" yêu cầu field ĐÃ TỒN TẠI ở tài liệu gốc; field chưa có (dù có giá trị mặc định
+   ngầm định trong spec của K8s) phải dùng "add". Nhầm 2 op này là lỗi rất hay gặp khi viết overlay.
+4. Overlay không nhất thiết phải "apply được ngay" mới có giá trị — "kubectl kustomize" (render, không
+   apply) đã đủ để validate cấu trúc đúng, hữu ích khi tài nguyên hạ tầng chưa đáp ứng đủ để chạy thật.

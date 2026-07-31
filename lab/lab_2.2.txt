@@ -1,0 +1,115 @@
+=== Lab 2.2 — Blue/Green Switch ===
+=== Áp dụng THẬT lên frontend trong namespace babymilk, dùng chính URL demo (NodePort 30080) ===
+=== Toàn bộ đã dọn sạch sau lab — cluster trở lại đúng trạng thái commit trong git ===
+
+=== Bước 1: gắn "blue" cho frontend đang chạy (patch trực tiếp, KHÔNG sửa file git — xem lý do cuối file) ===
+$ kubectl patch deployment frontend -n babymilk --type=json \
+  -p='[{"op":"add","path":"/spec/template/metadata/labels/version","value":"blue"}]'
+deployment.apps/frontend patched
+
+$ kubectl patch svc frontend -n babymilk -p '{"spec":{"selector":{"app":"frontend","version":"blue"}}}'
+service/frontend patched
+
+$ kubectl get pods -n babymilk -l app=frontend --show-labels
+NAME                        READY   STATUS    RESTARTS   AGE   LABELS
+frontend-748b58578f-smwl5   1/1     Running   0          15s   app=frontend,tier=frontend,version=blue
+
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200 (vẫn hoạt động bình thường)
+
+=== Bước 2: tạo bản "green" — cùng image, chỉ khác 1 ConfigMap đè index.html để phân biệt trực quan ===
+
+frontend-green-index.html: y hệt index.html gốc, thêm 1 div banner:
+  <div style="background:#16a34a;color:white;...">🟢 GREEN DEPLOYMENT — Lab 2.2 Blue/Green demo</div>
+
+$ kubectl create configmap frontend-green-banner -n babymilk --from-file=index.html=frontend-green-index.html
+configmap/frontend-green-banner created
+
+frontend-green.yaml — Deployment riêng, label {app: frontend, version: green}, mount ConfigMap đè
+lên /app/public/index.html bằng volumeMount + subPath (không sửa image, không sửa code):
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-green
+  namespace: babymilk
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend, version: green}
+  template:
+    metadata:
+      labels: {app: frontend, version: green}
+    spec:
+      containers:
+      - name: frontend
+        image: docker.io/babymilk/frontend:1.0
+        imagePullPolicy: Never
+        ...(env/resources/probes giống bản gốc)...
+        volumeMounts:
+        - name: green-banner
+          mountPath: /app/public/index.html
+          subPath: index.html
+      volumes:
+      - name: green-banner
+        configMap: {name: frontend-green-banner}
+
+$ kubectl apply -f frontend-green.yaml
+deployment.apps/frontend-green created
+
+$ kubectl get pods -n babymilk -l app=frontend --show-labels
+NAME                              READY   STATUS    RESTARTS   AGE   LABELS
+frontend-748b58578f-smwl5         1/1     Running   0          84s   app=frontend,tier=frontend,version=blue
+frontend-green-6bb7dd9cb4-nq6fr   1/1     Running   0          19s   app=frontend,version=green
+
+(Không cần thêm NetworkPolicy riêng cho frontend-green: policy "allow-ingress-frontend" chọn theo
+ podSelector "app: frontend" — frontend-green có label này nên tự động được policy áp dụng, không
+ cần khai báo gì thêm. Đây là lý do nên giữ nguyên "app: frontend" ở cả 2 bản, chỉ đổi "version".)
+
+=== Bước 3: FLIP — đổi Service selector sang green, xem live trên NodePort 30080 (URL demo thật) ===
+$ kubectl patch svc frontend -n babymilk -p '{"spec":{"selector":{"app":"frontend","version":"green"}}}'
+service/frontend patched
+
+$ curl http://192.168.56.102:30080/ | grep -o "GREEN DEPLOYMENT.*demo"
+GREEN DEPLOYMENT — Lab 2.2 Blue/Green demo
+=> Mở trình duyệt Windows lúc này: http://192.168.56.102:30080 thấy banner xanh lá ngay lập tức,
+   KHÔNG downtime, KHÔNG cần build/deploy lại gì — chỉ 1 lệnh patch Service.
+
+=== Bước 4: FLIP NGƯỢC lại blue ===
+$ kubectl patch svc frontend -n babymilk -p '{"spec":{"selector":{"app":"frontend","version":"blue"}}}'
+service/frontend patched
+$ curl http://192.168.56.102:30080/ | grep -o "GREEN DEPLOYMENT" || echo "Đã về blue"
+Đã về blue, không còn banner GREEN
+
+=== Bước 5: Dọn dẹp + TRẢ VỀ ĐÚNG TRẠNG THÁI GỐC (quan trọng) ===
+$ kubectl delete deployment frontend-green -n babymilk
+$ kubectl delete configmap frontend-green-banner -n babymilk
+
+Gỡ luôn label "version" đã patch lúc đầu, vì file git k8s/13-frontend.yaml KHÔNG có label này —
+nếu để lại, lần sau ai đó chạy "kubectl apply -f 13-frontend.yaml" (đúng quy trình bình thường) sẽ
+làm MẤT label "version: blue" khỏi pod template, khiến Service (đang đòi selector version=blue)
+KHÔNG còn Endpoint nào -> app sập ngay, rất khó đoán nguyên nhân nếu không nhớ đã patch tay trước đó.
+
+$ kubectl patch svc frontend -n babymilk --type=json -p='[{"op":"remove","path":"/spec/selector/version"}]'
+$ kubectl patch deployment frontend -n babymilk --type=json -p='[{"op":"remove","path":"/spec/template/metadata/labels/version"}]'
+
+$ kubectl get pods -n babymilk -l app=frontend --show-labels
+NAME                        READY   STATUS    RESTARTS   AGE   LABELS
+frontend-5f7f9c77f-67mtb    1/1     Running   0          12s   app=frontend,tier=frontend
+(pod-template-hash "5f7f9c77f" khớp CHÍNH XÁC với hash trước khi bắt đầu lab -> xác nhận đã về
+ đúng 100% cấu hình gốc, không lệch)
+
+$ kubectl get svc frontend -n babymilk -o jsonpath='{.spec.selector}'
+{"app":"frontend"}
+
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200
+
+=== Bài học tổng hợp ===
+1. Blue/Green thật ra chỉ là "2 Deployment cùng tồn tại + 1 Service, chuyển đổi bằng cách sửa
+   selector". Không cần rolling update, không có giai đoạn "half old half new" như rolling update —
+   chuyển đổi tức thì, và rollback (flip lại) cũng tức thì không cần chờ rollout.
+2. Khác Lab 2.1 (rolling update — Deployment TỰ quản lý chuyển đổi dần dần theo revision), blue/green
+   đòi hỏi TỰ TAY quản lý 2 Deployment song song và Service đứng giữa — linh hoạt hơn (test green
+   thoải mái mà không ảnh hưởng blue đang phục vụ thật) nhưng tốn gấp đôi tài nguyên trong lúc chạy
+   song song (ở đây chấp nhận được vì chỉ 1 pod nhẹ, thời gian ngắn).
+3. Điểm dễ quên nhất: nếu patch trực tiếp bằng kubectl (không sửa file manifest), phải nhớ REVERT
+   đúng những gì đã patch trước khi kết thúc — nếu không, cấu hình "sống" trên cluster sẽ lệch khỏi
+   file trong git, và lần deploy tiếp theo dựa vào git có thể vô tình làm sập thứ đang chạy tốt.

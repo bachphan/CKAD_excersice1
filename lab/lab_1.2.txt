@@ -1,0 +1,410 @@
+=== Nội dung init-sidecar-demo.yaml (dùng image thật babymilk/product-service:2.0 làm "app") ===
+=== Bản cuối, đã fix 2 lỗi phát hiện được khi chạy thật (xem "Ghi chú review" cuối file) ===
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-sidecar-demo
+  labels:
+    app: demo
+spec:
+  securityContext:
+    fsGroup: 1000
+  initContainers:
+  - name: init-setup
+    image: busybox:1.36
+    command: ['sh', '-c', 'echo "$(date) [init] log file created" > /var/log/app/app.log && chmod 664 /var/log/app/app.log']
+    volumeMounts:
+    - name: shared-logs
+      mountPath: /var/log/app
+
+  containers:
+  - name: app
+    image: docker.io/babymilk/product-service:2.0
+    imagePullPolicy: Never
+    command: ['sh', '-c', 'node src/server.js >> /var/log/app/app.log 2>&1']
+    env:
+    - name: PORT
+      value: "4001"
+    - name: PGHOST
+      value: "postgres-does-not-exist"   # cố ý sai — xem ghi chú review
+    - name: PGPORT
+      value: "5432"
+    - name: PGUSER
+      value: "babymilk"
+    - name: PGDATABASE
+      value: "babymilk_products"
+    - name: PGPASSWORD
+      value: "lab-password"
+    - name: JWT_SECRET
+      value: "lab-jwt-secret"
+    - name: INTERNAL_API_KEY
+      value: "lab-internal-key"
+    - name: SEED_ON_START
+      value: "false"
+    volumeMounts:
+    - name: shared-logs
+      mountPath: /var/log/app
+
+  - name: sidecar
+    image: busybox:1.36
+    command: ['sh', '-c', 'tail -f /var/log/app/app.log']
+    volumeMounts:
+    - name: shared-logs
+      mountPath: /var/log/app
+
+  volumes:
+  - name: shared-logs
+    emptyDir: {}
+
+=== Lệnh apply ===
+kubectl apply -f init-sidecar-demo.yaml
+
+=== Transcript chạy thật trên cluster (bachpt1@bachpt1, namespace default) ===
+$ kubectl apply -f init-sidecar-demo.yaml
+pod/init-sidecar-demo created
+
+$ kubectl get pod init-sidecar-demo
+NAME                READY   STATUS             RESTARTS      AGE
+init-sidecar-demo   1/2     CrashLoopBackOff   2 (26s ago)   50s
+
+$ kubectl describe pod init-sidecar-demo   (rút gọn phần cuối)
+  Type                        Status
+  PodReadyToStartContainers   True
+  Initialized                 True
+  Ready                       False
+  ContainersReady             False
+  PodScheduled                True
+Volumes:
+  shared-logs:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:
+    SizeLimit:  <unset>
+QoS Class:                   BestEffort
+Events:
+  Type     Reason     Age                From               Message
+  ----     ------     ----               ----               -------
+  Normal   Scheduled  49s                default-scheduler  Successfully assigned default/init-sidecar-demo to k8s-worker1
+  Normal   Pulled     49s                kubelet            Container image "busybox:1.36" already present on machine
+  Normal   Created    49s                kubelet            Created container: init-setup
+  Normal   Started    48s                kubelet            Started container init-setup
+  Normal   Pulled     47s                kubelet            Container image "busybox:1.36" already present on machine
+  Normal   Created    47s                kubelet            Created container: sidecar
+  Normal   Started    47s                kubelet            Started container sidecar
+  Normal   Pulled     26s (x3 over 48s)  kubelet            Container image "docker.io/babymilk/product-service:2.0" already present on machine
+  Normal   Created    26s (x3 over 47s)  kubelet            Created container: app
+  Normal   Started    26s (x3 over 47s)  kubelet            Started container app
+  Warning  BackOff    13s (x4 over 42s)  kubelet            Back-off restarting failed container app in pod init-sidecar-demo_default(da0bf99d-a222-4dc0-bf90-e027fdf78c76)
+
+$ kubectl logs init-sidecar-demo -c init-setup
+(rỗng — init container không in gì ra stdout, chỉ ghi vào file)
+
+$ kubectl logs init-sidecar-demo -c app
+(rỗng — toàn bộ output của "app" đã bị redirect ">> 2>&1" vào file dùng chung, không còn gì ra stdout container)
+
+$ kubectl logs init-sidecar-demo -c sidecar
+Thu Jul  9 09:15:13 UTC 2026 [init] log file created
+/app/node_modules/pg-pool/index.js:45
+    Error.captureStackTrace(err)
+          ^
+
+Error: getaddrinfo ENOTFOUND postgres-does-not-exist
+    at /app/node_modules/pg-pool/index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async runMigrations (file:///app/src/db.js:19:3)
+    at async file:///app/src/db.js:42:1 {
+  errno: -3008,
+  code: 'ENOTFOUND',
+  syscall: 'getaddrinfo',
+  hostname: 'postgres-does-not-exist'
+}
+
+Node.js v22.23.1
+(--- lặp lại y hệt sau mỗi lần CrashLoopBackOff restart app container,
+     vì lệnh ghi file dùng ">>" (append) nên log tích luỹ qua nhiều lần restart,
+     và app container restart không xoá emptyDir — chỉ Pod bị xoá mới mất) ---
+
+=== Ghi chú review — 2 lỗi thật phát hiện trong lúc chạy lab, đã fix ===
+
+1) Lỗi "Permission denied" (lần chạy đầu tiên, TRƯỚC khi có "securityContext.fsGroup" + "chmod 664"):
+   $ kubectl logs init-sidecar-demo -c app
+   sh: can't create /var/log/app/app.log: Permission denied
+
+   Nguyên nhân: initContainer "init-setup" (busybox) chạy mặc định bằng ROOT (uid 0), tạo file
+   app.log với quyền 644 và chủ sở hữu root:root. Container "app" (image babymilk/product-service)
+   có "USER node" trong Dockerfile -> chạy non-root (uid 1000) -> không có quyền GHI vào file do
+   root tạo (chỉ có quyền đọc, vì 644 = rw-r--r--, group/other không có quyền write).
+
+   Cách fix (2 bước, cả 2 đều cần thiết):
+   a. Thêm "securityContext: {fsGroup: 1000}" ở cấp Pod -> volume emptyDir được gắn group id 1000
+      (đúng group của user "node" trong image node:22-alpine).
+   b. VẪN CHƯA ĐỦ nếu chỉ có fsGroup — vì file tạo bằng ">" có mode mặc định 644, group có group
+      đúng (1000) nhưng KHÔNG có quyền ghi (bit "w" ở group). Phải thêm "chmod 664" trong init
+      container để file có quyền group-write thật sự.
+   => Bài học CKAD quan trọng: fsGroup chỉ chỉnh OWNERSHIP (group id) của volume, không tự động
+      cấp quyền WRITE cho file đã tồn tại — vẫn phải kiểm soát file mode (chmod) khi có nhiều
+      container chạy với user khác nhau (root vs non-root) cùng ghi vào 1 volume dùng chung.
+
+2) Lỗi kết nối Postgres "getaddrinfo ENOTFOUND postgres-does-not-exist" — đây là lỗi CỐ Ý, không
+   phải bug. Ban đầu định trỏ PGHOST sang Service "postgres" thật trong namespace "babymilk", nhưng
+   nhận ra pod lab này nằm ở namespace "default" -> NetworkPolicy "default-deny-ingress" trong
+   "babymilk" sẽ chặn (podSelector trong NetworkPolicy chỉ khớp pod CÙNG namespace, không có
+   namespaceSelector) -> kết nối sẽ bị treo rất lâu (TCP timeout, không có RST) thay vì báo lỗi
+   nhanh, đã vậy còn dính vào Service thật đang chạy nếu lỡ trùng label. Nên đổi PGHOST sang 1
+   hostname không tồn tại để lỗi NHANH (DNS ENOTFOUND, không phải timeout), sạch, tách biệt
+   hoàn toàn khỏi app "babymilk" đang chạy thật.
+   => Bài học: khi viết lab test cách ly, tránh trỏ thẳng vào hạ tầng production/demo đang chạy —
+      dùng giá trị rõ ràng sai/không tồn tại để có lỗi nhanh, dễ đoán, không ảnh hưởng hệ thống khác.
+
+=== Kết luận phần 1 (crash) ===
+Dù "app" container liên tục crash (CrashLoopBackOff), `kubectl logs -c sidecar` vẫn xem được đầy đủ
+log — kể cả log của lần restart trước — vì sidecar chỉ tail 1 file trong emptyDir dùng chung, không
+phụ thuộc vòng đời riêng của container "app". Đây chính là lý do pattern "logging sidecar" tồn tại:
+tách hẳn việc thu thập log ra khỏi container ứng dụng chính, log vẫn xem được dù app có lỗi/crash.
+
+================================================================================
+=== PHẦN 2 — Bản chạy THÀNH CÔNG (sau khi trỏ PGHOST vào Postgres thật) ===
+================================================================================
+
+Để có bản đối chiếu "chạy đúng" bên cạnh bản debug ở Phần 1, dựng thêm 1 Postgres RIÊNG, tạm thời,
+namespace "default" — hoàn toàn tách biệt khỏi Postgres thật của app "babymilk" (không đụng
+NetworkPolicy, không đụng Service/label nào của app đang chạy production).
+
+=== lab-postgres.yaml (Postgres tạm cho lab, xoá sau khi xong) ===
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lab-postgres
+  labels:
+    app: lab-postgres
+spec:
+  containers:
+  - name: postgres
+    image: postgres:16-alpine
+    env:
+    - name: POSTGRES_USER
+      value: "babymilk"
+    - name: POSTGRES_PASSWORD
+      value: "lab-password"
+    - name: POSTGRES_DB
+      value: "babymilk_products"
+    ports:
+    - containerPort: 5432
+    readinessProbe:
+      exec:
+        command: ["pg_isready", "-U", "babymilk"]
+      initialDelaySeconds: 3
+      periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lab-postgres
+spec:
+  selector:
+    app: lab-postgres
+  ports:
+  - port: 5432
+
+=== Chỉ sửa đúng 1 dòng trong init-sidecar-demo.yaml ===
+    - name: PGHOST
+      value: "lab-postgres"   # thay vì "postgres-does-not-exist"
+
+=== Transcript chạy thật ===
+$ kubectl apply -f lab-postgres.yaml
+pod/lab-postgres created
+service/lab-postgres created
+
+$ kubectl get pod lab-postgres
+NAME           READY   STATUS    RESTARTS   AGE
+lab-postgres   1/1     Running   0          25s
+
+$ kubectl apply -f init-sidecar-demo.yaml
+pod/init-sidecar-demo created
+
+$ kubectl get pod init-sidecar-demo
+NAME                READY   STATUS    RESTARTS   AGE
+init-sidecar-demo   2/2     Running   0          8s
+
+$ kubectl get pod init-sidecar-demo -o wide
+NAME                READY   STATUS    RESTARTS   AGE   IP           NODE          NOMINATED NODE   READINESS GATES
+init-sidecar-demo   2/2     Running   0          21s   10.0.1.157   k8s-worker1   <none>           <none>
+
+$ kubectl describe pod init-sidecar-demo
+Name:             init-sidecar-demo
+Namespace:        default
+Priority:         0
+Service Account:  default
+Node:             k8s-worker1/192.168.56.102
+Start Time:       Thu, 09 Jul 2026 09:21:53 +0000
+Labels:           app=demo
+Annotations:      <none>
+Status:           Running
+IP:               10.0.1.157
+IPs:
+  IP:  10.0.1.157
+Init Containers:
+  init-setup:
+    Image:         busybox:1.36
+    Command:
+      sh
+      -c
+      echo "$(date) [init] log file created" > /var/log/app/app.log && chmod 664 /var/log/app/app.log
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+    Ready:          True
+    Restart Count:  0
+Containers:
+  app:
+    Image:         docker.io/babymilk/product-service:2.0
+    Command:
+      sh
+      -c
+      node src/server.js >> /var/log/app/app.log 2>&1
+    State:          Running
+      Started:      Thu, 09 Jul 2026 09:21:56 +0000
+    Ready:          True
+    Restart Count:  0
+    Environment:
+      PORT:              4001
+      PGHOST:            lab-postgres
+      PGPORT:            5432
+      PGUSER:            babymilk
+      PGDATABASE:        babymilk_products
+      PGPASSWORD:        lab-password
+      JWT_SECRET:        lab-jwt-secret
+      INTERNAL_API_KEY:  lab-internal-key
+      SEED_ON_START:     false
+  sidecar:
+    Image:         busybox:1.36
+    Command:
+      sh
+      -c
+      tail -f /var/log/app/app.log
+    State:          Running
+      Started:      Thu, 09 Jul 2026 09:21:56 +0000
+    Ready:          True
+    Restart Count:  0
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True
+  Initialized                 True
+  Ready                       True
+  ContainersReady             True
+  PodScheduled                True
+Volumes:
+  shared-logs:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+QoS Class:                   BestEffort
+Events:
+  Type    Reason     Age   From               Message
+  ----    ------     ----  ----               -------
+  Normal  Scheduled  21s   default-scheduler  Successfully assigned default/init-sidecar-demo to k8s-worker1
+  Normal  Pulled     20s   kubelet            Container image "busybox:1.36" already present on machine
+  Normal  Created    20s   kubelet            Created container: init-setup
+  Normal  Started    20s   kubelet            Started container init-setup
+  Normal  Pulled     19s   kubelet            Container image "docker.io/babymilk/product-service:2.0" already present on machine
+  Normal  Created    18s   kubelet            Created container: app
+  Normal  Started    18s   kubelet            Started container app
+  Normal  Pulled     18s   kubelet            Container image "busybox:1.36" already present on machine
+  Normal  Created    18s   kubelet            Created container: sidecar
+  Normal  Started    18s   kubelet            Started container sidecar
+
+$ kubectl logs init-sidecar-demo -c sidecar
+Thu Jul  9 09:21:54 UTC 2026 [init] log file created
+[db] applied migration 001_init.sql
+product-service listening on http://localhost:4001
+
+=== Dọn dẹp sau khi chạy xong (không để lại pod/postgres tạm trên cluster) ===
+$ kubectl delete pod init-sidecar-demo --wait=false
+pod "init-sidecar-demo" deleted
+$ kubectl delete -f lab-postgres.yaml --wait=false
+pod "lab-postgres" deleted
+service "lab-postgres" deleted
+
+=== Kết luận phần 2 (thành công) ===
+- Pod lên "2/2 Running" (đúng nghĩa cả 2 container chính đều Ready — initContainer không tính vào
+  tổng READY, chỉ containers[] mới tính).
+- `kubectl logs -c sidecar` cho thấy đúng 3 dòng theo thứ tự thời gian: dòng do initContainer ghi
+  trước (chứng minh initContainers chạy XONG mới tới containers), dòng "applied migration" (db.js
+  chạy migration thành công ngay khi kết nối được Postgres), và dòng "listening on..." (server Express
+  khởi động xong) — toàn bộ đều lấy từ 1 file duy nhất trong emptyDir dùng chung giữa 3 container.
+- So sánh Phần 1 vs Phần 2: cùng 1 manifest, chỉ đổi đúng 1 giá trị env (PGHOST) là chuyển từ
+  CrashLoopBackOff sang Running hoàn toàn — minh hoạ rõ manifest cấu trúc đúng nhưng config
+  (env var) sai vẫn khiến app không chạy được, đúng dạng câu hỏi debug hay gặp trong đề CKAD.
+
+================================================================================
+=== PHẦN 3 — Thêm Service NodePort để soi trực tiếp bằng trình duyệt Windows ===
+================================================================================
+
+=== Lý do cần thêm: "product-service listening on http://localhost:4001" chỉ nghe được TRONG pod
+     (container "app" và "sidecar" chia sẻ network namespace, cùng thấy "localhost"). Máy Windows
+     ở ngoài cluster hoàn toàn không chạm được vào "localhost" đó — phải có Service mới route được. ===
+
+Deploy lại pod (lần này bật SEED_ON_START=true để có data thật xem trên trình duyệt cho trực quan,
+thay vì chỉ có /healthz trống trơn):
+
+    - name: SEED_ON_START
+      value: "true"      # đổi từ "false" -> "true"
+
+init-sidecar-svc.yaml:
+apiVersion: v1
+kind: Service
+metadata:
+  name: init-sidecar-svc
+spec:
+  type: NodePort
+  selector:
+    app: demo
+  ports:
+  - port: 4001
+    targetPort: 4001
+    nodePort: 30082
+
+=== Transcript ===
+$ kubectl delete pod init-sidecar-demo --wait=true
+pod "init-sidecar-demo" deleted
+
+$ kubectl apply -f init-sidecar-demo.yaml
+pod/init-sidecar-demo created
+
+$ kubectl apply -f init-sidecar-svc.yaml
+service/init-sidecar-svc created
+
+$ kubectl get pod init-sidecar-demo -o wide
+NAME                READY   STATUS    RESTARTS   AGE   IP           NODE          NOMINATED NODE   READINESS GATES
+init-sidecar-demo   2/2     Running   0          10s   10.0.1.105   k8s-worker1   <none>           <none>
+
+$ kubectl get endpoints init-sidecar-svc
+NAME               ENDPOINTS         AGE
+init-sidecar-svc   10.0.1.105:4001   63s
+
+$ kubectl logs init-sidecar-demo -c sidecar
+Thu Jul  9 09:44:51 UTC 2026 [init] log file created
+[seed] inserted 14 sample products
+product-service listening on http://localhost:4001
+
+Test từ máy Windows (ngoài cluster hoàn toàn):
+$ curl http://192.168.56.102:30082/healthz
+{"status":"ok","service":"product-service"}   HTTP 200
+
+$ curl http://192.168.56.102:30082/api/products
+{"items":[{"id":14,"name":"Sữa Friso Gold 4 850g", ...}]}   (14 sản phẩm mẫu, seed thật)
+
+=> Mở trình duyệt Windows: http://192.168.56.102:30082/api/products
+   (hoặc http://192.168.56.102:30082/healthz cho gọn)
+
+=== Bài học tổng hợp Phần 3 ===
+- Pod dù đang "2/2 Running" và log "listening on..." KHÔNG có nghĩa là truy cập được từ bên ngoài
+  — đó chỉ là bằng chứng process bên trong container đã bind đúng port trên "localhost" của NÓ.
+  Muốn máy khác (kể cả Pod khác trong cùng cluster, chưa nói tới máy Windows ngoài cluster) gọi vào
+  được, bắt buộc phải có Service đứng trước, trỏ đúng selector vào Pod đó.
+- 2 thứ luôn phải kiểm tra khi "Service có vẻ không hoạt động": (1) Service có Endpoint không
+  (kubectl get endpoints) — nếu rỗng nghĩa là selector sai/không khớp label Pod nào; (2) NetworkPolicy
+  có đang chặn không — namespace "default" ở đây không có NetworkPolicy nào nên không vướng, nhưng
+  nếu deploy vào namespace "babymilk" (có default-deny-ingress) thì sẽ cần thêm policy mở đường
+  y hệt như đã làm ở phần checklist NetworkPolicy trước đó.
+
+=== Dọn dẹp cuối cùng (không để lại tài nguyên thừa trên cluster) ===
+$ kubectl delete pod speedy-pod init-sidecar-demo lab-postgres --wait=false
+$ kubectl delete svc speedy-pod-svc init-sidecar-svc lab-postgres --wait=false

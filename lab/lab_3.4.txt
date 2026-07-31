@@ -1,0 +1,97 @@
+=== Lab 3.4 — Namespace Quotas ===
+=== Áp dụng THẬT vào namespace babymilk (đã tính kỹ trước để không chặn nhầm pod đang chạy) ===
+
+=== Bước 0: đo tổng requests/limits thực tế đang dùng TRƯỚC khi đặt quota ===
+$ kubectl get pods -n babymilk -o jsonpath='...' (requests/limits từng pod)
+frontend          50m/32Mi    100m/64Mi
+order-service     50m/64Mi    150m/256Mi
+postgres          100m/128Mi  300m/384Mi
+product-service   50m/64Mi    150m/256Mi
+user-service      50m/64Mi    150m/256Mi
+TỔNG:             requests 300m CPU / 352Mi RAM   |   limits 850m CPU / 1216Mi RAM
+
+=== ResourceQuota — size có margin đủ rộng cho HPA scale (product-service tối đa 3 pod), rolling
+    update tạm surge thêm 1 pod, CronJob spawn Job ngắn hạn — nhưng vẫn nằm trong ngân sách node
+    thật (~1.9 CPU / 3.2GB) ===
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: babymilk-quota
+  namespace: babymilk
+spec:
+  hard:
+    requests.cpu: "1200m"
+    requests.memory: "1600Mi"
+    limits.cpu: "1800m"
+    limits.memory: "2800Mi"
+    pods: "20"
+    persistentvolumeclaims: "3"
+
+$ kubectl apply -f resourcequota.yaml
+resourcequota/babymilk-quota created
+
+$ kubectl describe resourcequota babymilk-quota -n babymilk
+Resource                Used    Hard
+--------                ----    ----
+limits.cpu              850m    1800m
+limits.memory           1216Mi  2800Mi
+persistentvolumeclaims  1       3
+pods                    5       20
+requests.cpu            300m    1200m
+requests.memory         352Mi   1600Mi
+
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200 (app KHÔNG bị ảnh hưởng gì, đúng như tính toán)
+
+=== Test tạo pod VƯỢT quota còn lại (chỉ còn 1800-850=950m limits.cpu, xin hẳn 1000m) ===
+apiVersion: v1
+kind: Pod
+metadata: {name: quota-buster, namespace: babymilk}
+spec:
+  containers:
+  - name: quota-buster
+    image: busybox:1.36
+    command: ['sleep', '3600']
+    resources:
+      requests: {cpu: "1000m", memory: "100Mi"}
+      limits: {cpu: "1000m", memory: "100Mi"}
+
+$ kubectl apply -f quota-buster.yaml
+Error from server (Forbidden): pods "quota-buster" is forbidden: exceeded quota: babymilk-quota,
+requested: limits.cpu=1,requests.cpu=1, used: limits.cpu=850m,requests.cpu=300m,
+limited: limits.cpu=1800m,requests.cpu=1200m
+
+=> Bị từ chối NGAY LÚC TẠO (admission control), không phải sau khi tạo rồi mới báo lỗi — pod không
+   hề được ghi vào etcd, không tốn tài nguyên schedule.
+
+=== Đối chiếu: giảm xuống 100m (còn dư trong quota) -> tạo được ===
+$ kubectl apply -f quota-buster.yaml   (đã sửa 1000m -> 100m)
+pod/quota-buster created
+$ kubectl get pod quota-buster -n babymilk
+NAME           READY   STATUS    RESTARTS   AGE
+quota-buster   1/1     Running   0          5s
+
+$ kubectl describe resourcequota babymilk-quota -n babymilk
+Resource                Used    Hard
+limits.cpu              950m    1800m     <- tăng đúng 100m sau khi pod mới lên
+requests.cpu            400m    1200m     <- tăng đúng 100m
+pods                    6       20
+
+=== Dọn dẹp ===
+$ kubectl delete pod quota-buster -n babymilk
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200 (app vẫn ổn định xuyên suốt cả bài test)
+
+=== Bài học tổng hợp ===
+1. LUÔN đo tổng resources ĐANG DÙNG THẬT trước khi đặt ResourceQuota lên namespace đang chạy sản
+   xuất — nếu đặt quota thấp hơn tổng hiện tại, TẤT CẢ pod hiện có vẫn tiếp tục chạy (quota không hồi
+   tố, không giết pod đang tồn tại), nhưng MỌI hành động tạo/update pod mới (kể cả rolling update
+   bình thường!) sẽ bị chặn ngay lập tức — dễ gây sự cố "tưởng như không có gì thay đổi" cho tới lần
+   deploy tiếp theo.
+2. ResourceQuota chặn ở tầng ADMISSION CONTROL (lúc gọi API tạo/sửa), không phải sau khi tạo — an
+   toàn hơn nhiều so với việc pod tạo xong rồi mới bị đá ra, tránh lãng phí tài nguyên schedule.
+3. Nếu namespace có ResourceQuota set `requests.cpu`/`requests.memory`, MỌI pod tạo trong namespace
+   đó BẮT BUỘC phải khai báo `resources.requests` (và `limits` nếu quota set limits) — pod thiếu khai
+   báo sẽ bị từ chối với lỗi "must specify limits.cpu for..." (đã thấy ở lần thử đầu dùng --overrides
+   không merge đúng resources) — không liên quan gì tới việc pod đó nhỏ hay lớn.
+4. `pods: "20"` và `persistentvolumeclaims: "3"` là quota ĐẾM SỐ LƯỢNG (không phải tài nguyên) — hữu
+   ích để chặn tình huống 1 lỗi logic (VD CronJob loop tạo Job vô hạn) làm tràn ngập namespace bằng
+   hàng trăm pod, dù mỗi pod nhỏ tới đâu.

@@ -1,0 +1,97 @@
+=== Lab 4.4 — Persistent Volume Claims (dynamic provisioning) ===
+=== Cluster trước đó CHƯA có StorageClass nào -> phải cài local-path-provisioner trước ===
+
+=== Bước 0: cài local-path-provisioner (Rancher, nhẹ, không đụng gì tới Cilium/CNI) ===
+$ kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml
+namespace/local-path-storage created
+...
+deployment.apps/local-path-provisioner created
+storageclass.storage.k8s.io/local-path created
+
+$ kubectl get storageclass
+NAME         PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  26s
+
+--- Sự cố xảy ra đúng lúc này: pod local-path-provisioner bị Pending, hoá ra do node worker đang bị
+    Cilium tự taint "node.cilium.io/agent-not-ready" (di chứng từ sự cố Lab 4.2) — xem ghi chú cuối
+    file để biết cách đã xử lý (reboot node worker). Sau khi cluster hồi phục, tiếp tục lab bình thường. ---
+
+=== Bước 1: Tạo PVC dùng StorageClass "local-path" (KHÔNG tự tạo PV tay như các lần trước) ===
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: lab44-dynamic-pvc}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: {requests: {storage: 1Gi}}
+
+$ kubectl apply -f lab44-pvc.yaml
+$ kubectl get pvc lab44-dynamic-pvc
+NAME                STATUS    VOLUME   CAPACITY   STORAGECLASS   AGE
+lab44-dynamic-pvc   Pending                       local-path     3s
+
+=> "Pending" là ĐÚNG, không phải lỗi — StorageClass "local-path" dùng
+   VOLUMEBINDINGMODE=WaitForFirstConsumer: PV thật chỉ được tạo khi có ít nhất 1 Pod THỰC SỰ dùng
+   PVC (để provisioner biết phải tạo thư mục local trên NODE NÀO — khác PV tĩnh khai báo trước node
+   ngay từ đầu như mình làm cho Postgres).
+
+=== Bước 2: Tạo Pod dùng PVC -> kích hoạt provisioning tự động ===
+$ kubectl apply -f lab44-pod.yaml   (container ghi "UNIQUE-MARKER-42" vào /data/proof.txt)
+
+$ kubectl get pvc lab44-dynamic-pvc
+NAME                STATUS   VOLUME                                     CAPACITY   STORAGECLASS
+lab44-dynamic-pvc   Bound    pvc-8f292283-1cf9-4508-a8c0-3506eda803f7   1Gi        local-path
+
+$ kubectl get pv | grep lab44
+pvc-8f292283-...   1Gi   RWO   Delete   Bound   default/lab44-dynamic-pvc   local-path   8s
+
+=> PV được TẠO TỰ ĐỘNG (tên do provisioner sinh ra ngẫu nhiên) ngay khi Pod bắt đầu chạy — đây chính
+   là "dynamic provisioning" thật, khác hẳn cách làm PV tĩnh (hostPath + nodeAffinity khai tay) cho
+   Postgres trước đó.
+
+=== Bước 3: Test persistence CHẶT CHẼ (tránh nhầm lẫn do container tự ghi lại đè lên) ===
+Lần thử đầu dùng "echo $(date)" — xoá/tạo lại pod cho ra CÙNG timestamp, đáng ngờ (có thể do 2 lần
+tạo quá sát giờ trùng giây) -> đổi cách test cho chắc chắn:
+
+1. Ghi giá trị CỐ ĐỊNH "UNIQUE-MARKER-42" (không phụ thuộc thời gian) bằng pod "lab44-writer".
+2. Xoá pod "lab44-writer" hoàn toàn.
+3. Tạo pod HOÀN TOÀN KHÁC ("lab44-reader") — container CHỈ "sleep", KHÔNG có lệnh ghi file nào.
+4. Đọc file từ pod mới này — nếu vẫn thấy đúng giá trị, chắc chắn 100% là do PVC giữ lại, không phải
+   do trùng hợp lệnh ghi lại giống nhau.
+
+$ kubectl exec lab44-reader -- cat /data/proof.txt
+UNIQUE-MARKER-42          <- ĐÚNG, pod mới không hề ghi gì, vẫn đọc được data cũ
+
+=== Dọn dẹp — kiểm tra reclaimPolicy "Delete" hoạt động đúng ===
+$ kubectl delete pvc lab44-dynamic-pvc
+$ kubectl get pv | grep lab44
+(trống — PV tự động bị XOÁ theo, đúng với reclaimPolicy: Delete khai báo trong StorageClass;
+ khác với PV Postgres của dự án dùng reclaimPolicy: Retain — xoá PVC không xoá PV/data, phải xoá
+ tay nếu thật sự muốn dọn, tránh mất dữ liệu quan trọng do lỡ tay xoá PVC)
+
+=== Bài học tổng hợp ===
+1. `WaitForFirstConsumer` là volumeBindingMode PHỔ BIẾN và NÊN DÙNG cho storage local-per-node (như
+   local-path-provisioner) — trì hoãn việc tạo PV thật tới khi biết chắc Pod sẽ chạy ở node nào,
+   tránh tình huống PV tạo sẵn ở node A nhưng Pod lại bị scheduler xếp vào node B (không mount được).
+2. `reclaimPolicy: Delete` (mặc định của nhiều StorageClass) tự xoá PV lẫn data thật khi xoá PVC —
+   TIỆN cho môi trường dev/test (dọn dẹp tự động, không rác), nhưng NGUY HIỂM cho data quan trọng.
+   Dữ liệu Postgres của dự án dùng `Retain` (khai tay ở PV static) chính vì lý do này — xoá nhầm PVC
+   không được phép mất data thật.
+3. Test persistence cần loại trừ khả năng "trùng hợp" — cách chắc chắn nhất là dùng Pod HOÀN TOÀN
+   KHÁC với container KHÔNG có khả năng tự ghi lại data, chỉ đọc, để chứng minh volume thật sự độc
+   lập với vòng đời Pod, không phải do lệnh chạy lại cho ra kết quả giống nhau.
+4. `local-path-provisioner` lưu data trên host filesystem của ĐÚNG node Pod chạy (mặc định
+   `/opt/local-path-provisioner`) — vẫn là "local" storage (không phải network storage như NFS/Ceph),
+   nên PVC vẫn bị ràng buộc vào 1 node cụ thể sau khi bind lần đầu (giống hạn chế của PV tĩnh hostPath
+   trước đó, chỉ khác ở chỗ được TỰ ĐỘNG hoá thay vì khai tay).
+
+=== Ghi chú: sự cố hạ tầng gặp phải trong lúc làm lab này (đã xử lý xong) ===
+Xem chi tiết đầy đủ trong lab_4.2.txt (Ingress) — tóm tắt: bật Cilium Ingress Controller làm agent
+Cilium trên node worker bị kẹt "Init:0/6" hơn 10 phút (do cache eBPF cấp cgroup của agent cũ bị "mồ
+côi" giữa lúc restart), khiến Cilium TỰ TAINT node worker "node.cilium.io/agent-not-ready" -> chặn
+MỌI pod mới schedule vào đó (kể cả local-path-provisioner của lab này). Xử lý bằng cách:
+  1. Rollback config Cilium (tắt lại ingressController) — không giải quyết được (state đã kẹt ở tầng kernel).
+  2. Restart containerd trên worker — KHÔNG đủ (containerd không quản lý eBPF map, chúng nằm ở kernel).
+  3. REBOOT hẳn node worker — xoá sạch state kernel, agent lên lại bình thường "Init:5/6" -> "1/1 Running".
+Verify sau khi hồi phục: toàn bộ app babymilk (5/5 pod) tự phục hồi, DATA POSTGRES CÒN NGUYÊN VẸN qua
+suốt sự cố + reboot (nhờ PVC hostPath giữ ở node, không bị xoá khi container/OS restart).

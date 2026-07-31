@@ -1,0 +1,77 @@
+=== Lab 2.3 — Scale & HPA ===
+=== Áp dụng THẬT lên product-service, namespace babymilk ===
+
+=== Trạng thái trước lab ===
+$ kubectl get hpa product-service-hpa -n babymilk
+NAME                  REFERENCE                    TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+product-service-hpa   Deployment/product-service   cpu: 4%/70%   1         3         1          14d
+
+=== Bước 1: tạm nâng maxReplicas HPA lên 10 ===
+Lý do bắt buộc: nếu KHÔNG nâng trước, HPA đang chạy nền sẽ tự động kéo replicas về lại maxReplicas=3
+ngay khi phát hiện scale tay vượt quá giới hạn nó quản lý — "kubectl scale" và HPA cùng điều khiển
+1 field (spec.replicas) nên sẽ giành nhau, HPA luôn thắng vì nó chạy theo chu kỳ liên tục.
+
+$ kubectl patch hpa product-service-hpa -n babymilk -p '{"spec":{"maxReplicas":10}}'
+horizontalpodautoscaler.autoscaling/product-service-hpa patched
+
+=== Bước 2: Scale tay lên 10 ===
+$ kubectl scale deployment/product-service --replicas=10 -n babymilk
+deployment.apps/product-service scaled
+
+$ kubectl get deployment product-service -n babymilk
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+product-service   10/10   10           10          14d
+
+$ kubectl get pods -n babymilk -l app=product-service   (rút gọn)
+10 pod, tất cả "1/1 Running" trong vòng ~23s
+
+=== Bước 3: Kiểm tra tài nguyên node lúc tải cao (phát hiện thật, đáng ghi lại) ===
+$ kubectl describe node k8s-worker1 | grep -A6 "Allocated resources"
+Allocated resources:
+  Resource           Requests      Limits
+  --------           --------      ------
+  cpu                950m (47%)    3200m (160%)
+  memory             1138Mi (34%)  4544Mi (137%)
+
+=> Requests vẫn OK (47%/34% — đây là con số Scheduler dùng để quyết định có xếp được pod hay không,
+   nên cả 10 pod lên được bình thường). NHƯNG Limits đã VƯỢT 100% cả CPU (160%) lẫn RAM (137%) —
+   nghĩa là nếu tất cả 10 pod cùng lúc cố dùng tới mức limit tối đa, node sẽ không đủ tài nguyên thật
+   (có thể bị throttle CPU nặng, hoặc OOM kill 1 vài pod). Ở đây AN TOÀN vì usage thực tế cực thấp
+   (mỗi pod idle chỉ ~1-50m CPU, ~18Mi RAM — xem "kubectl top pods"), nhưng đây là bài học quan trọng:
+   Requests quyết định CÓ SCHEDULE ĐƯỢC hay không, Limits chỉ là "trần" — 2 con số không kiểm tra
+   chéo nhau, hoàn toàn có thể overcommit Limits vượt xa dung lượng node thật.
+
+$ curl http://192.168.56.102:30080/api/products -> HTTP 200 (app vẫn phục vụ bình thường khi 10 pod)
+
+=== Bước 4: Scale về lại 1, cấu hình HPA target CPU 70% -> 50% ===
+$ kubectl scale deployment/product-service --replicas=1 -n babymilk
+deployment.apps/product-service scaled
+
+$ kubectl patch hpa product-service-hpa -n babymilk --type=json -p='[
+    {"op":"replace","path":"/spec/maxReplicas","value":3},
+    {"op":"replace","path":"/spec/metrics/0/resource/target/averageUtilization","value":50}
+  ]'
+horizontalpodautoscaler.autoscaling/product-service-hpa patched
+
+$ kubectl get hpa product-service-hpa -n babymilk
+NAME                  REFERENCE                    TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+product-service-hpa   Deployment/product-service   cpu: 4%/50%   1         3         1          14d
+
+$ kubectl get deployment product-service -n babymilk
+NAME              READY   UP-TO-DATE   AVAILABLE   AGE
+product-service   1/1     1            1           14d
+
+=== File k8s/40-hpa.yaml đã cập nhật khớp với cấu hình thật (averageUtilization: 70 -> 50) ===
+
+=== Bài học tổng hợp ===
+1. "kubectl scale" và HPA cùng quản lý 1 giá trị (spec.replicas) -> luôn phải kiểm tra HPA đang
+   active trước khi scale tay, nếu không thao tác sẽ bị HPA "ghi đè" ngược lại gần như ngay lập tức
+   (chu kỳ reconcile HPA thường 15-30s).
+2. maxReplicas là giới hạn CỨNG của HPA — muốn scale tay VƯỢT giới hạn đó, bắt buộc phải nâng
+   maxReplicas trước, không có cách nào "bypass" HPA tạm thời khác an toàn hơn.
+3. Requests vs Limits là 2 câu chuyện khác nhau: Scheduler chỉ nhìn Requests để quyết định xếp pod
+   vào node nào (đủ chỗ hay không); Limits là giới hạn runtime (cgroup) không liên quan gì tới việc
+   scheduler có cho phép tạo pod hay không — nên hoàn toàn có thể (và ở đây đã) tạo ra tình huống
+   Limits vượt xa capacity thật của node mà vẫn schedule bình thường, miễn Requests còn đủ chỗ.
+4. Target CPU 50% (thay vì 70%) khiến HPA "nhạy" hơn — sẽ scale up sớm hơn khi tải tăng, đánh đổi
+   giữa phản ứng nhanh (ít rủi ro quá tải) và tốn tài nguyên hơn (scale up sớm hơn cần thiết).

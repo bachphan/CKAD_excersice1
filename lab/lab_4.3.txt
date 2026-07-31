@@ -1,0 +1,113 @@
+=== Lab 4.3 — NetworkPolicy Isolation (Egress) ===
+=== Áp dụng THẬT vào namespace babymilk — mở rộng NetworkPolicy đã có (vốn chỉ giới hạn Ingress) ===
+=== Làm SAU KHI Cilium đã hồi phục ổn định từ sự cố Lab 4.2 (xem lab_4.2.txt) — cẩn trọng hơn hẳn ===
+
+=== Nguyên tắc: default-deny-egress toàn namespace + DNS allow (bắt buộc, dễ quên nhất) +
+    mở đúng luồng nội bộ cần thiết. KHÔNG rule nào cho phép ra internet -> egress internet
+    bị chặn NGẦM ĐỊNH, không cần khai báo "deny 0.0.0.0/0" tường minh. ===
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-dns-egress, namespace: babymilk}
+spec:
+  podSelector: {}                    # áp dụng cho MỌI pod — ai cũng cần DNS để resolve hostname nội bộ
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      podSelector: {matchLabels: {k8s-app: kube-dns}}
+    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny-egress, namespace: babymilk}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]              # từ đây, MỌI pod bị chặn egress trừ khi có rule khác cho phép
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-frontend-egress-to-backends, namespace: babymilk}
+spec:
+  podSelector: {matchLabels: {app: frontend}}
+  policyTypes: [Egress]
+  egress:
+  - {to: [{podSelector: {matchLabels: {app: product-service}}}], ports: [{port: 4001}]}
+  - {to: [{podSelector: {matchLabels: {app: user-service}}}],    ports: [{port: 4002}]}
+  - {to: [{podSelector: {matchLabels: {app: order-service}}}],   ports: [{port: 4003}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-backends-egress-to-postgres, namespace: babymilk}
+spec:
+  podSelector:
+    matchExpressions:
+    - {key: app, operator: In, values: [product-service, user-service, order-service]}
+  policyTypes: [Egress]
+  egress:
+  - {to: [{podSelector: {matchLabels: {app: postgres}}}], ports: [{port: 5432}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-order-egress-to-product, namespace: babymilk}
+spec:
+  podSelector: {matchLabels: {app: order-service}}
+  policyTypes: [Egress]
+  egress:
+  - {to: [{podSelector: {matchLabels: {app: product-service}}}], ports: [{port: 4001}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-stock-monitor-egress, namespace: babymilk}
+spec:
+  podSelector: {matchLabels: {app: stock-monitor}}
+  policyTypes: [Egress]
+  egress:
+  - {to: [{podSelector: {matchLabels: {app: product-service}}}], ports: [{port: 4001}]}
+
+=== Apply TẤT CẢ trong 1 lần (không apply từng cái riêng lẻ) — để tránh khoảng thời gian có
+    "default-deny-egress" mà CHƯA có đủ rule allow, gây app gián đoạn thật giữa chừng ===
+$ kubectl apply -f 21-networkpolicy-egress.yaml
+networkpolicy.networking.k8s.io/allow-dns-egress created
+networkpolicy.networking.k8s.io/default-deny-egress created
+networkpolicy.networking.k8s.io/allow-frontend-egress-to-backends created
+networkpolicy.networking.k8s.io/allow-backends-egress-to-postgres created
+networkpolicy.networking.k8s.io/allow-order-egress-to-product created
+networkpolicy.networking.k8s.io/allow-stock-monitor-egress created
+
+=== Verify NGAY sau khi apply ===
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200
+$ curl http://192.168.56.102:30080/api/products -> HTTP 200 (frontend -> product-service OK)
+
+=== Test luồng phức tạp nhất: checkout (đụng CẢ 3 backend + Postgres + gọi chéo order->product) ===
+$ đăng nhập -> lấy token -> POST /api/orders
+{"id":3,"userId":1,"status":"confirmed","total":465000,...}
+Checkout HTTP: 201     <- TẤT CẢ egress path hoạt động: frontend->user-service (login),
+                            frontend->order-service (checkout), order-service->product-service
+                            (/internal/checkout), order-service->postgres, product-service->postgres —
+                            và DNS resolve đúng cho tất cả hostname nội bộ.
+
+=== Test NGƯỢC LẠI — xác nhận backend THẬT SỰ không ra được internet ===
+$ kubectl exec -n babymilk deploy/product-service -- timeout 6 wget -qO- http://example.com
+(không có output, exit code 143 = bị timeout command giết sau 6s)
+=> Kết nối bị TREO tới hết timeout, KHÔNG có phản hồi gì (không "connection refused" ngay lập tức) —
+   đúng hành vi "silent drop" của NetworkPolicy đã học từ Lab 2.1: gói tin bị huỷ âm thầm, không có
+   RST/ICMP trả về, khác hẳn với việc bị tường lửa "từ chối tường minh".
+
+=== Bài học tổng hợp ===
+1. LỖI DỄ MẮC NHẤT khi thêm default-deny-egress: QUÊN mở DNS. Vì DNS query cũng là 1 dạng egress
+   (pod tự gọi ra CoreDNS ở namespace khác), nếu chặn hết egress mà không mở port 53 riêng, MỌI pod
+   sẽ không resolve được BẤT KỲ hostname nào — kể cả hostname NỘI BỘ như "postgres", "product-service"
+   — làm app sập toàn bộ dù bản thân traffic tới đích vẫn được phép (chưa bao giờ kết nối tới được vì
+   không biết đích ở IP nào).
+2. Egress và Ingress là 2 chiều ĐỘC LẬP, phải khai riêng cả 2: policy Ingress cho phép "order-service
+   gọi vào product-service" (đã có ở CiliumNetworkPolicy trước đây) KHÔNG tự động cấp quyền Egress
+   cho order-service gọi RA ngoài — phải khai thêm riêng NetworkPolicy Egress từ phía order-service.
+3. Chặn internet (0.0.0.0/0) không cần khai "deny" tường minh — chỉ cần KHÔNG có rule nào allow tới
+   đó là đủ, vì default-deny-egress (podSelector rỗng) đã phủ toàn bộ traffic ra ngoài trừ những gì
+   được liệt kê rõ ràng. Đây là mô hình "default deny, allowlist" — an toàn hơn nhiều so với
+   "default allow, blocklist" (rất dễ quên chặn 1 đích nguy hiểm nào đó).
+4. Áp dụng TOÀN BỘ policy trong 1 lần "kubectl apply -f" (nhiều resource trong 1 file, áp cùng lúc)
+   an toàn hơn áp từng cái riêng lẻ theo thứ tự — nếu áp "default-deny-egress" riêng TRƯỚC rồi mới áp
+   các rule allow SAU (dù chỉ cách nhau vài giây), app sẽ có 1 khoảng thời gian THẬT SỰ bị đứt egress
+   hoàn toàn (kể cả DNS), có thể đủ để vài request đang xử lý dở bị lỗi.

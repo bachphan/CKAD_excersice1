@@ -1,0 +1,70 @@
+=== Lab 4.2 — Ingress Routing ===
+=== KHÔNG hoàn thành — gặp sự cố hạ tầng thật, đã chủ động ROLLBACK để bảo vệ app đang chạy ===
+
+=== Bối cảnh ===
+Cluster chưa có IngressClass/Ingress controller nào (kubectl get ingressclass -> No resources found).
+Cilium (CNI đang dùng) có hỗ trợ sẵn Ingress Controller nhưng KHÔNG bật mặc định lúc cài ban đầu.
+
+=== Thử bật Cilium Ingress Controller ===
+$ cilium upgrade --set ingressController.enabled=true --set ingressController.loadbalancerMode=shared \
+  --set ingressController.service.type=NodePort \
+  --set ingressController.service.insecureNodePort=30092 \
+  --set ingressController.service.secureNodePort=30093
+(áp dụng thành công, nhưng cảnh báo cần restart pod Cilium để nhận config mới)
+
+$ kubectl -n kube-system rollout restart daemonset cilium
+$ kubectl -n kube-system rollout restart deployment cilium-operator
+
+=== Sự cố xảy ra ===
+Sau khi restart, agent Cilium trên node MASTER (bachpt1) phục hồi bình thường sau ~2 lần retry.
+NHƯNG agent trên node WORKER (k8s-worker1 — chính node chạy TOÀN BỘ app babymilk thật) bị kẹt liên
+tục ở "Init:0/6", log lặp lại:
+  Error: Build config failed: failed to start: Get "https://10.96.0.1:443/api/v1/namespaces/kube-system":
+  dial tcp 10.96.0.1:443: i/o timeout
+
+Đáng chú ý: curl trực tiếp từ HOST (ssh vào worker, không qua pod) tới CHÍNH ClusterIP đó
+(https://10.96.0.1:443/healthz) trả về "ok" ngay lập tức — chứng tỏ apiserver, kube-proxy, iptables
+NAT rule đều hoạt động bình thường. Vấn đề nằm ở việc process bên trong pod Cilium mới (dù dùng
+hostNetwork: true) không kết nối được, trong khi process khác trên cùng host thì kết nối được —
+nghi ngờ do cgroup-eBPF hook cũ (từ agent trước đó, quản lý redirect traffic dựa theo cgroup của
+từng process) bị dở dang giữa lúc agent restart, gây "mồ côi" 1 khoảng thời gian cho tới khi agent
+mới hoàn tất khởi tạo lại toàn bộ datapath.
+
+=== Đánh giá mức độ ảnh hưởng TRƯỚC khi quyết định ===
+$ curl http://192.168.56.102:30080/healthz -> HTTP 200 (app vẫn phục vụ bình thường suốt sự cố)
+$ kubectl exec -n babymilk deploy/order-service -- wget -qO- http://product-service:4001/api/products
+wget: server returned error: HTTP/1.1 403 Forbidden   <- 403 nghĩa là KẾT NỐI THÀNH CÔNG tới product-service
+                                                            (bị NetworkPolicy chặn đúng luật, không phải
+                                                            lỗi mạng) -> xác nhận networking app THẬT vẫn ổn,
+                                                            sự cố chỉ giới hạn ở pod Cilium agent mới đang init.
+
+=== Quyết định: ROLLBACK ngay khi thấy sự cố kéo dài >7 phút trên node chạy app thật ===
+$ cilium upgrade --set ingressController.enabled=false
+$ kubectl delete pod -n kube-system <cilium-pod-bị-kẹt>   (buộc tạo lại theo config đã rollback)
+
+=== Kết quả ===
+- App babymilk KHÔNG downtime bất kỳ lúc nào trong toàn bộ quá trình (verify bằng curl liên tục).
+- Ingress Controller CHƯA được bật — Lab 4.2 coi như chưa hoàn thành, cần thử lại sau (có thể cần
+  restart lại cả 2 node, hoặc điều tra sâu hơn nguyên nhân gốc trước khi thử lại, tránh lặp lại rủi ro).
+- Cluster vẫn dùng NodePort (:30080) làm cách expose chính, đúng như trước lab này.
+
+=== Bài học tổng hợp (quan trọng hơn cả việc lab có "xong" hay không) ===
+1. Thay đổi cấu hình CNI (Cilium) là loại thay đổi RỦI RO CAO NHẤT trong toàn bộ cluster — nó ảnh
+   hưởng đến network datapath của MỌI pod, không riêng gì tính năng đang bật. Trước khi thử trên
+   cluster đang chạy app thật, nên cân nhắc: có cluster/namespace test riêng không, hay ít nhất
+   backup được cấu hình cũ để rollback nhanh.
+2. Luôn có "điểm dừng rõ ràng" (ở đây tự đặt ra: >5-7 phút agent không Ready trên node chạy app thật
+   = dừng và rollback) thay vì cố chờ vô thời hạn — biết khi nào NÊN dừng thử nghiệm quan trọng không
+   kém biết cách thử nghiệm.
+3. Luôn đo ẢNH HƯỞNG THẬT (không chỉ nhìn trạng thái pod) trước khi hoảng — ở đây dù pod Cilium mới
+   bị lỗi, app vẫn phục vụ bình thường (nhờ Cilium giữ lại BPF rule cũ đã được agent trước lập trình,
+   không xóa ngay khi agent pod bị restart) — kiểm tra kỹ giúp quyết định rollback bình tĩnh, đúng
+   trọng tâm, thay vì phản ứng thái quá hoặc ngược lại là chủ quan bỏ qua rủi ro.
+4. hostNetwork: true không đảm bảo hành vi mạng "y hệt host" 100% khi CNI dùng cơ chế cgroup-eBPF
+   để can thiệp traffic — đây là điểm khác biệt tinh vi so với các CNI chỉ dùng iptables truyền
+   thống (như Calico bản không bật eBPF), cần lưu ý khi debug sự cố tương tự trong tương lai.
+
+=== Việc cần làm lại (chưa xong) ===
+- [ ] Thử lại Lab 4.2 vào lúc khác, có thể cần: (a) đảm bảo cả 2 node đều đã ổn định trước khi bật
+      tính năng, (b) thử trên 1 node trước (không phải DaemonSet full cluster ngay), (c) hoặc tìm hiểu
+      sâu hơn cơ chế cgroup-eBPF của Cilium trước khi thử lại để tránh lặp lại sự cố.

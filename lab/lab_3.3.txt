@@ -1,0 +1,111 @@
+=== Lab 3.3 — ServiceAccount & RBAC ===
+=== Namespace babymilk, dọn dẹp sau khi demo xong (không để lại quyền thừa trên cluster) ===
+
+=== ServiceAccount + Role (chỉ get/list/watch pods, đúng namespace babymilk) + RoleBinding ===
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rbac-demo-sa
+  namespace: babymilk
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: babymilk
+rules:
+- apiGroups: ['']
+  resources: ['pods']
+  verbs: ['get', 'list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rbac-demo-binding
+  namespace: babymilk
+subjects:
+- kind: ServiceAccount
+  name: rbac-demo-sa
+  namespace: babymilk
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+
+=== Job dùng ServiceAccount trên để gọi K8s API (kubectl tự nhận cấu hình in-cluster: SA token +
+    CA cert được kubelet tự động mount vào /var/run/secrets/kubernetes.io/serviceaccount/) ===
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rbac-demo-job
+  namespace: babymilk
+spec:
+  template:
+    spec:
+      serviceAccountName: rbac-demo-sa
+      restartPolicy: Never
+      containers:
+      - name: kubectl-demo
+        image: bitnami/kubectl:latest
+        command: ['sh', '-c', 'kubectl get pods -n babymilk']
+
+$ kubectl apply -f rbac-demo.yaml
+serviceaccount/rbac-demo-sa created
+role.rbac.authorization.k8s.io/pod-reader created
+rolebinding.rbac.authorization.k8s.io/rbac-demo-binding created
+job.batch/rbac-demo-job created
+
+$ kubectl get job rbac-demo-job -n babymilk
+NAME            STATUS     COMPLETIONS   DURATION   AGE
+rbac-demo-job   Complete   1/1           59s        83s
+
+=== Log thật — pod dùng đúng token của SA để gọi API server, KHÔNG dùng credential nào khác ===
+$ kubectl logs -n babymilk -l job-name=rbac-demo-job
+NAME                            READY   STATUS    RESTARTS   AGE
+frontend-69684497b5-bs2np       1/1     Running   0          2m28s
+order-service-c66f9c869-clgpt   1/1     Running   0          2m28s
+postgres-65f4dddc66-zv676       1/1     Running   0          35m
+product-service-f785cb-6jdt9    1/1     Running   0          4m4s
+user-service-86c9d94d9c-rkz5s   1/1     Running   0          2m29s
+
+=== TEST TRƯỜNG HỢP NGƯỢC LẠI — xác nhận Role thật sự giới hạn đúng, không phải "cho full quyền
+    ngầm định" (đây là bước hay bị bỏ qua nhất khi làm RBAC — chỉ test "cho phép" mà không test
+    "từ chối" thì không chắc chắn quyền có bị cấp thừa hay không) ===
+
+Job thử 2 việc KHÔNG được cấp quyền: (1) xoá pod (Role chỉ có get/list/watch, không có delete),
+(2) đọc pod ở namespace KHÁC (Role chỉ scope trong "babymilk", không phải ClusterRole).
+
+$ kubectl apply -f rbac-negative-test.yaml
+job.batch/rbac-negative-test created
+
+$ kubectl logs -n babymilk -l job-name=rbac-negative-test
+--- Thu xoa pod (phai bi tu choi) ---
+Error from server (Forbidden): pods "product-service-f785cb-6jdt9" is forbidden: User
+"system:serviceaccount:babymilk:rbac-demo-sa" cannot delete resource "pods" in API group "" in the
+namespace "babymilk"
+--- Thu doc pod namespace kube-system (phai bi tu choi) ---
+Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:babymilk:rbac-demo-sa"
+cannot list resource "pods" in API group "" in the namespace "kube-system"
+
+=> Cả 2 đều bị chặn ĐÚNG như kỳ vọng — xác nhận Role/RoleBinding hoạt động chuẩn nguyên tắc
+   least-privilege: SA chỉ làm được ĐÚNG những gì được cấp (get/list/watch pods, đúng 1 namespace),
+   không hơn.
+
+=== Dọn dẹp ===
+$ kubectl delete -f rbac-demo.yaml
+$ kubectl delete -f rbac-negative-test.yaml
+
+=== Bài học tổng hợp ===
+1. Mỗi Pod luôn có 1 ServiceAccount gắn kèm (mặc định là "default" của namespace nếu không chỉ định
+   `serviceAccountName`) — token của SA đó tự động mount vào pod, và mọi lệnh `kubectl`/gọi API từ
+   BÊN TRONG pod đều dùng danh tính này, KHÔNG dùng danh tính của người deploy (`bachpt1` admin).
+   Đây là lý do các Deployment babymilk (product/user/order-service...) trước giờ không tự ý gọi
+   được K8s API — SA "default" của chúng không có Role/RoleBinding nào cấp quyền.
+2. `Role` + `RoleBinding` giới hạn trong 1 namespace; muốn cấp quyền xuyên nhiều/tất cả namespace
+   phải dùng `ClusterRole` + `ClusterRoleBinding` — không nhầm 2 cặp này, nhầm sẽ vô tình cấp quyền
+   rộng hơn dự định (rủi ro bảo mật thật, không chỉ là lỗi cú pháp).
+3. LUÔN test cả 2 chiều khi làm RBAC: verify "được phép làm X" (positive test) VÀ "không được phép
+   làm Y" (negative test). Chỉ test chiều positive rất dễ để lọt lỗi cấp quyền thừa (ví dụ ai đó vô
+   tình tạo ClusterRole thay vì Role) mà không phát hiện ra vì mọi thứ "trông vẫn hoạt động".
+4. Dùng image `bitnami/kubectl` (có sẵn `kubectl` + tự nhận cấu hình in-cluster) là cách nhanh nhất để
+   demo RBAC — không cần tự viết code gọi REST API + xử lý TLS/token thủ công.

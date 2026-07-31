@@ -1,0 +1,176 @@
+=== Lệnh tạo manifest (imperative + dry-run, "60-second pod") ===
+=== Dùng image thật của dự án baby-milk-shop: babymilk/frontend:1.0 ===
+kubectl run speedy-pod \
+  --image=docker.io/babymilk/frontend:1.0 \
+  --labels=app=web,tier=frontend,env=lab \
+  --env=PORT=4000 \
+  --env=UPSTREAM_TIMEOUT_MS=10000 \
+  --dry-run=client -o yaml > pod.yaml
+
+=== Nội dung pod.yaml (đã thêm resources + imagePullPolicy: Never thủ công sau dry-run) ===
+=== imagePullPolicy: Never bắt buộc vì image chỉ có local trên worker (ctr import), không có registry để pull ===
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: web
+    env: lab
+    tier: frontend
+  name: speedy-pod
+spec:
+  containers:
+  - name: speedy-pod
+    image: docker.io/babymilk/frontend:1.0
+    imagePullPolicy: Never
+    env:
+    - name: PORT
+      value: "4000"
+    - name: UPSTREAM_TIMEOUT_MS
+      value: "10000"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+  restartPolicy: Always
+
+=== Transcript chạy thật trên cluster (bachpt1@bachpt1, namespace default) ===
+$ kubectl apply -f pod.yaml
+pod/speedy-pod created
+
+$ kubectl get pod speedy-pod -o wide
+NAME         READY   STATUS    RESTARTS   AGE   IP           NODE          NOMINATED NODE   READINESS GATES
+speedy-pod   1/1     Running   0          4s    10.0.1.123   k8s-worker1   <none>           <none>
+
+$ kubectl describe pod speedy-pod
+Name:             speedy-pod
+Namespace:        default
+Priority:         0
+Service Account:  default
+Node:             k8s-worker1/192.168.56.102
+Start Time:       Thu, 09 Jul 2026 09:09:15 +0000
+Labels:           app=web
+                  env=lab
+                  tier=frontend
+Annotations:      <none>
+Status:           Running
+IP:               10.0.1.123
+IPs:
+  IP:  10.0.1.123
+Containers:
+  speedy-pod:
+    Container ID:   containerd://57d2b40842f51ce0a7990fdd5cba7d0b54c65a2c0697b51f450e0f5c8b572d73
+    Image:          docker.io/babymilk/frontend:1.0
+    Image ID:       sha256:050f09153b4949efb6a03a0c1f961342c828d24371e3c7c0f6cfd62ea64748d1
+    Port:           <none>
+    Host Port:      <none>
+    State:          Running
+      Started:      Thu, 09 Jul 2026 09:09:17 +0000
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     250m
+      memory:  128Mi
+    Requests:
+      cpu:     100m
+      memory:  64Mi
+    Environment:
+      PORT:                 4000
+      UPSTREAM_TIMEOUT_MS:  10000
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-ccpfs (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True
+  Initialized                 True
+  Ready                       True
+  ContainersReady             True
+  PodScheduled                True
+Volumes:
+  kube-api-access-ccpfs:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason     Age   From               Message
+  ----    ------     ----  ----               -------
+  Normal  Scheduled  3s    default-scheduler  Successfully assigned default/speedy-pod to k8s-worker1
+  Normal  Pulled     2s    kubelet            Container image "docker.io/babymilk/frontend:1.0" already present on machine
+  Normal  Created    2s    kubelet            Created container: speedy-pod
+  Normal  Started    2s    kubelet            Started container speedy-pod
+
+$ kubectl get pod speedy-pod -o jsonpath='{.metadata.labels}'
+{"app":"web","env":"lab","tier":"frontend"}
+
+$ kubectl get pod speedy-pod -o jsonpath='{.spec.containers[0].env}'
+[{"name":"PORT","value":"4000"},{"name":"UPSTREAM_TIMEOUT_MS","value":"10000"}]
+
+$ kubectl get pod speedy-pod -o jsonpath='{.spec.containers[0].resources}'
+{"limits":{"cpu":"250m","memory":"128Mi"},"requests":{"cpu":"100m","memory":"64Mi"}}
+
+$ kubectl get pod speedy-pod --no-headers
+speedy-pod   1/1   Running   0     16s
+
+$ kubectl logs speedy-pod
+frontend (static + gateway) listening on http://localhost:4000
+
+=== Ghi chú review ===
+- Lần chạy trước (dùng nginx) có bug: `--env=GREETING=hello,MODE=demo` (1 flag, dấu phẩy) chỉ tạo
+  RA 1 biến GREETING với value "hello,MODE=demo" thay vì 2 biến riêng biệt.
+  Khác với --labels (hỗ trợ dấu phẩy), --env CHỈ nhận đúng 1 cặp key=value mỗi lần gọi.
+  Lần này gọi --env hai lần riêng biệt (--env=PORT=4000 --env=UPSTREAM_TIMEOUT_MS=10000) -> đúng,
+  2 biến tách biệt rõ ràng trong output describe/jsonpath.
+- Dùng image babymilk/frontend:1.0 thay vì nginx: cần thêm imagePullPolicy: Never vì image chỉ tồn tại
+  local trên node worker (import qua ctr, không có registry) — nếu thiếu dòng này, kubelet sẽ cố pull
+  từ docker.io và bị lỗi ImagePullBackOff (vì "babymilk/frontend" không phải image công khai thật).
+- Log "frontend (static + gateway) listening on http://localhost:4000" xác nhận app khởi động đúng,
+  dù pod này không có ConfigMap/Secret/Service nào khác (chỉ set 2 env var tối thiểu để không crash).
+
+=== BỔ SUNG: thêm Service NodePort để soi trực tiếp bằng trình duyệt Windows ===
+=== Lý do cần thêm: Pod đứng riêng lẻ không có Service thì "localhost:4000" bên trong container
+     chỉ container khác CÙNG pod gọi được — máy Windows không có cách nào chạm vào được. ===
+
+speedy-pod-svc.yaml:
+apiVersion: v1
+kind: Service
+metadata:
+  name: speedy-pod-svc
+spec:
+  type: NodePort
+  selector:
+    app: web
+    tier: frontend
+    env: lab
+  ports:
+  - port: 4000
+    targetPort: 4000
+    nodePort: 30081
+
+$ kubectl apply -f speedy-pod-svc.yaml
+service/speedy-pod-svc created
+
+$ kubectl get svc speedy-pod-svc
+NAME             TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE
+speedy-pod-svc   NodePort   10.111.80.255   <none>        4000:30081/TCP   7s
+
+$ kubectl get endpoints speedy-pod-svc
+NAME             ENDPOINTS        AGE
+speedy-pod-svc   10.0.1.28:4000   7s
+(có Endpoint = Service đã tìm đúng Pod theo selector, request sẽ route được tới nơi)
+
+Test từ máy Windows (ngoài cluster hoàn toàn):
+$ curl http://192.168.56.102:30081/healthz
+{"status":"ok","service":"frontend"}   HTTP 200
+
+=> Mở trình duyệt Windows: http://192.168.56.102:30081/healthz
+
+Lưu ý selector của Service PHẢI khớp CHÍNH XÁC toàn bộ label của Pod (hoặc tập con) — ở đây dùng cả
+3 label app/tier/env cho chắc, dù chỉ cần 1-2 label là đủ phân biệt trong trường hợp này.

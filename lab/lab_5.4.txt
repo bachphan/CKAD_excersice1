@@ -1,0 +1,82 @@
+=== Lab 5.4 — Helm Deploy & Rollback ===
+=== Ví dụ RIÊNG BIỆT, không thay thế Kustomize đang dùng cho baby-milk-shop ===
+=== (project chính vẫn deploy bằng "kubectl apply -k k8s/overlays/prod" như trước) ===
+
+=== Bước 0: Cài Helm (chưa có sẵn trên cluster) ===
+$ curl -fsSL -o helm.tar.gz https://get.helm.sh/helm-v3.21.3-linux-amd64.tar.gz
+$ tar -xzf helm.tar.gz && sudo mv linux-amd64/helm /usr/local/bin/helm
+$ helm version
+version.BuildInfo{Version:"v3.21.3", ...}
+
+$ helm repo add bitnami https://charts.bitnami.com/bitnami
+$ helm repo update
+
+=== Bước 1: Install chart với value override ===
+$ helm install lab54-nginx bitnami/nginx \
+    --set replicaCount=1 \
+    --set resources.requests.cpu=50m --set resources.requests.memory=32Mi \
+    --set resources.limits.cpu=100m --set resources.limits.memory=64Mi \
+    --set service.type=ClusterIP
+
+--- Sự cố nhỏ gặp phải: lần đầu chỉ định thêm "--set image.tag=1.25" bị lỗi
+    "registry-1.docker.io/bitnami/nginx:1.25: not found" — Bitnami gần đây giới hạn quyền truy cập
+    các tag phiên bản cụ thể (chỉ còn free cho tag "latest"/rolling tag qua registry công khai).
+    Fix: bỏ "--set image.tag", dùng đúng tag mặc định của chart (latest). ---
+
+$ kubectl get pods -l app.kubernetes.io/instance=lab54-nginx
+NAME                          READY   STATUS    RESTARTS   AGE
+lab54-nginx-d5476454f-4mc84   1/1     Running   0          74s
+
+$ helm status lab54-nginx
+NAME: lab54-nginx
+STATUS: deployed
+REVISION: 1
+CHART VERSION: 25.0.15
+APP VERSION: 1.31.3
+
+=== Bước 2: Upgrade release (đổi value: replicaCount 1 -> 2) ===
+$ helm upgrade lab54-nginx bitnami/nginx --set replicaCount=2 --set resources...
+$ helm history lab54-nginx
+REVISION   STATUS       DESCRIPTION
+1          superseded   Install complete
+2          deployed     Upgrade complete
+
+$ kubectl get pods -l app.kubernetes.io/instance=lab54-nginx
+lab54-nginx-d5476454f-4mc84   1/1   Running   0   106s
+lab54-nginx-d5476454f-69wbd   1/1   Running   0   11s     <- pod thứ 2, đúng replicaCount=2 mới
+
+=== Bước 3: Rollback về revision 1 ===
+$ helm rollback lab54-nginx 1
+Rollback was a success! Happy Helming!
+
+$ helm history lab54-nginx
+REVISION   STATUS       DESCRIPTION
+1          superseded   Install complete
+2          superseded   Upgrade complete
+3          deployed     Rollback to 1        <- REVISION MỚI (3), không phải quay lại số "1"
+
+$ kubectl get pods -l app.kubernetes.io/instance=lab54-nginx
+lab54-nginx-d5476454f-4mc84   1/1   Running   0   2m10s      <- về lại đúng 1 pod (replicaCount=1)
+
+=== Dọn dẹp ===
+$ helm uninstall lab54-nginx
+release "lab54-nginx" uninstalled
+
+=== Bài học tổng hợp ===
+1. `helm rollback <release> <revision>` giống hệt tinh thần `kubectl rollout undo` (Lab 2.1): KHÔNG
+   xoá lịch sử, KHÔNG "quay ngược" số revision — luôn tạo THÊM 1 revision mới ghi lại "đây là bản
+   giống revision N", giữ toàn bộ lịch sử để audit sau này (biết chính xác đã rollback khi nào, từ
+   đâu tới đâu).
+2. `--set key=value` override 1-2 giá trị cụ thể mà không cần viết cả file `values.yaml` — tiện cho
+   demo/test nhanh, nhưng với thay đổi phức tạp (nhiều key lồng nhau) nên dùng `-f custom-values.yaml`
+   để dễ đọc/version control hơn là chuỗi `--set` dài.
+3. Helm chart (đặc biệt chart bên thứ 3 như Bitnami) có thể chứa init container/dependency riêng
+   (ở đây có "preserve-logs-symlinks") — khi debug lỗi "chart không chạy", cần xem đủ CẢ init
+   container lẫn container chính, không chỉ container chính.
+4. Bitnami (nhà cung cấp chart phổ biến) đã thay đổi chính sách, KHÔNG còn free tag phiên bản cụ thể
+   qua registry công khai như trước — chỉ dùng được tag "latest"/rolling. Cần lưu ý khi dùng chart
+   Bitnami cho môi trường cần pin đúng version (production thật nên tự host image hoặc dùng
+   registry trả phí của Bitnami/Broadcom).
+5. Vì đây chỉ là ví dụ riêng để luyện Helm, KHÔNG dùng để thay thế cách quản lý chính của dự án
+   baby-milk-shop — Kustomize (`kubectl apply -k`) vẫn là nguồn chân lý chính thức cho namespace
+   "babymilk", tránh 2 công cụ quản lý cùng 1 tập resource gây xung đột/khó đoán.

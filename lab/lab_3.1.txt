@@ -1,0 +1,62 @@
+=== Lab 3.1 — ConfigMap & Secret Injection ===
+=== Drill an toàn (namespace default, dọn dẹp sau khi xong) ===
+
+$ echo 'secret-from-file-value' > /tmp/api-key.txt
+$ kubectl create secret generic demo-secret --from-file=apiKey=/tmp/api-key.txt
+secret/demo-secret created
+
+$ kubectl create configmap demo-config --from-literal=greeting=Hello --from-literal=env=lab
+configmap/demo-config created
+
+=== Pod inject CẢ 2 kiểu cùng lúc: Secret -> env var, ConfigMap -> volume mount ===
+apiVersion: v1
+kind: Pod
+metadata:
+  name: injection-demo
+spec:
+  containers:
+  - name: demo
+    image: busybox:1.36
+    command: ['sh', '-c', 'sleep 3600']
+    env:
+    - name: API_KEY
+      valueFrom:
+        secretKeyRef: {name: demo-secret, key: apiKey}
+    volumeMounts:
+    - name: config-vol
+      mountPath: /etc/demo-config
+  volumes:
+  - name: config-vol
+    configMap:
+      name: demo-config
+
+$ kubectl apply -f demo-injection-pod.yaml
+pod/injection-demo created
+
+=== Verify ===
+$ kubectl exec injection-demo -- env | grep API_KEY
+API_KEY=secret-from-file-value
+
+$ kubectl exec injection-demo -- ls /etc/demo-config
+env
+greeting
+$ kubectl exec injection-demo -- cat /etc/demo-config/greeting
+Hello
+$ kubectl exec injection-demo -- cat /etc/demo-config/env
+lab
+
+=== Dọn dẹp ===
+$ kubectl delete pod injection-demo; kubectl delete secret demo-secret; kubectl delete configmap demo-config
+
+=== Bài học ===
+1. Secret qua env var: giá trị nằm PHẲNG trong biến môi trường của process — dễ vô tình bị log ra
+   (VD: crash dump in hết env, hoặc `kubectl exec -- env` như trên có thể xem được nếu ai đó có quyền
+   exec vào pod). Đây là lý do dự án baby-milk-shop (xem README) chọn cách này cho JWT_SECRET/DB
+   password vì đơn giản, nhưng cần hạn chế quyền `exec` qua RBAC (xem Lab 3.3) để giảm rủi ro.
+2. ConfigMap qua volume mount: mỗi key trở thành 1 FILE riêng trong thư mục mount — phù hợp cho
+   config dạng file (nginx.conf, application.properties...) hoặc khi cần TỰ ĐỘNG CẬP NHẬT (Kubernetes
+   tự sync lại file trong volume khi ConfigMap đổi, KHÔNG cần restart pod — khác hẳn env var, env var
+   CHỈ đọc 1 LẦN lúc container start, sửa ConfigMap sau đó không tự áp dụng cho tới khi pod restart).
+3. `--from-file` giữ NGUYÊN VẸN nội dung file (kể cả multi-line) làm value của 1 key; `--from-literal`
+   dùng cho giá trị ngắn gõ trực tiếp trên dòng lệnh — cả 2 áp dụng được cho cả Secret lẫn ConfigMap
+   (không phải Secret chỉ dùng --from-file, ConfigMap chỉ dùng --from-literal).

@@ -1,0 +1,81 @@
+=== Lab 3.2 — Security Context Lockdown ===
+=== Áp dụng THẬT lên cả 4 Deployment (product/user/order-service + frontend) trong babymilk ===
+=== Tiện thể fix luôn timeoutSeconds probe (phát hiện lỗi từ Lab 2.1) ===
+
+=== Thêm vào spec.template.spec (Pod-level) của cả 4 Deployment ===
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000        # khớp đúng uid của user "node" trong image node:22-alpine
+        seccompProfile:
+          type: RuntimeDefault  # dùng seccomp profile mặc định của containerd, chặn syscall nguy hiểm
+
+=== Thêm vào container securityContext ===
+        securityContext:
+          readOnlyRootFilesystem: true      # container KHÔNG được ghi vào filesystem gốc
+          allowPrivilegeEscalation: false    # chặn leo quyền qua setuid binary / sudo trong container
+          capabilities:
+            drop: ["ALL"]                    # bỏ hết Linux capabilities mặc định (CHOWN, NET_RAW,...)
+
+=== Cũng thêm timeoutSeconds: 3 cho cả readiness + liveness probe (mặc định 1s quá chặt, phát hiện
+    ở Lab 2.1 gây restart giả dưới CPU limit) ===
+
+=== Test trên product-service TRƯỚC (1 service, để không làm gãy cả 4 nếu có vấn đề) ===
+$ kubectl apply -f 10-product-service.yaml
+deployment.apps/product-service configured
+
+$ kubectl get pods -n babymilk -l app=product-service
+NAME                            READY   STATUS    RESTARTS   AGE
+product-service-f785cb-6jdt9    1/1     Running   0          17s
+
+$ curl http://192.168.56.102:30080/api/products -> HTTP 200 (app vẫn hoạt động bình thường)
+
+$ kubectl exec -n babymilk deploy/product-service -- id
+uid=1000(node) gid=1000(node) groups=1000(node)
+
+--- Test thật: thử ghi vào root filesystem, PHẢI bị chặn ---
+$ kubectl exec -n babymilk deploy/product-service -- sh -c 'touch /test-write'
+touch: /test-write: Read-only file system
+command terminated with exit code 1
+=> Đúng như thiết kế. Ứng dụng không cần ghi file cục bộ (đã bỏ SQLite từ khi chuyển sang Postgres),
+   nên readOnlyRootFilesystem không ảnh hưởng gì tới hoạt động.
+
+=== Sau khi verify product-service OK, áp dụng nốt cho 3 service còn lại ===
+$ kubectl apply -f 11-user-service.yaml -f 12-order-service.yaml -f 13-frontend.yaml
+deployment.apps/user-service configured
+deployment.apps/order-service configured
+deployment.apps/frontend configured
+
+$ kubectl get pods -n babymilk
+NAME                            READY   STATUS    RESTARTS   AGE
+frontend-69684497b5-bs2np       1/1     Running   0          16s
+order-service-c66f9c869-clgpt   1/1     Running   0          16s
+postgres-65f4dddc66-zv676       1/1     Running   0          33m
+product-service-f785cb-6jdt9    1/1     Running   0          112s
+user-service-86c9d94d9c-rkz5s   1/1     Running   0          17s
+(tất cả pod mới lên "1/1 Running" ngay lần đầu, không có pod nào crash)
+
+=== Test end-to-end đầy đủ luồng phức tạp nhất (checkout, qua cả 3 backend + Postgres) ===
+$ đăng nhập admin -> lấy token -> POST /api/orders
+{"id":2,"userId":1,"status":"confirmed","total":495000,...}
+Checkout HTTP: 201          <- checkout vẫn hoạt động hoàn hảo dưới readOnlyRootFilesystem
+
+=== Verify đầy đủ 3 khóa securityContext trên pod thật ===
+$ kubectl get pod -n babymilk -l app=order-service -o jsonpath='{.items[0].spec.containers[0].securityContext}'
+{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}
+
+=== Bài học tổng hợp ===
+1. `readOnlyRootFilesystem: true` an toàn để bật cho Node.js app KHÔNG ghi file cục bộ (log ra stdout,
+   data ở Postgres/volume riêng) — đây là trường hợp lý tưởng vì app không cần sửa gì thêm. Nếu app
+   CẦN ghi tạm (cache, session file...), phải mount thêm `emptyDir` vào đúng thư mục cần ghi (VD /tmp)
+   trước khi bật flag này, nếu không container sẽ crash ngay khi cố ghi file.
+2. `runAsNonRoot: true` chỉ là LỚP KIỂM TRA THÊM — image `node:22-alpine` đã tự set `USER node` trong
+   Dockerfile nên vốn dĩ đã chạy non-root. Khai báo lại ở securityContext giúp Kubernetes TỪ CHỐI
+   khởi động pod nếu sau này có ai (vô tình hay cố ý) sửa Dockerfile bỏ dòng USER — an toàn "phòng thủ
+   theo lớp" (defense in depth), không dựa hoàn toàn vào 1 chỗ duy nhất.
+3. `capabilities: drop: [ALL]` không ảnh hưởng gì ở đây vì app Node.js thuần không cần bất kỳ Linux
+   capability đặc quyền nào (không bind port <1024, không thao tác raw socket, không đổi UID/GID...).
+   Nếu app cần 1 capability cụ thể (hiếm khi cần trong app web thông thường), phải thêm lại có chọn
+   lọc qua "capabilities.add", KHÔNG bỏ hẳn "drop: [ALL]" để giữ nguyên tắc least-privilege.
+4. Test 1 service trước rồi mới lan ra cả 4 là cách làm đúng khi áp dụng thay đổi có rủi ro lên hệ
+   thống đang chạy thật — nếu readOnlyRootFilesystem gây crash, chỉ 1 service bị ảnh hưởng (và các
+   service khác vẫn phục vụ được nhờ Service DNS không đổi), thay vì cả 4 cùng sập một lúc.

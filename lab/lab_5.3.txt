@@ -1,0 +1,94 @@
+=== Lab 5.3 — Broken YAML Triage ===
+=== Drill an toàn (namespace default), 1 manifest với CẢ 3 LỖI cùng lúc, sửa từng cái theo thứ tự
+    triage hợp lý (từ trong ra ngoài: image -> pod chạy được chưa -> selector -> có endpoint chưa
+    -> targetPort -> gọi tới đúng cổng chưa) ===
+
+=== Manifest gốc (CỐ Ý sai cả 3 chỗ) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: lab53-app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: lab53-app}}
+  template:
+    metadata: {labels: {app: lab53-app}}
+    spec:
+      containers:
+      - name: app
+        image: docker.io/babymilk/frontend:1.0-typo   # <- LỖI 1: tag không tồn tại
+        imagePullPolicy: Never
+        ports: [{containerPort: 4000}]
+        env: [{name: PORT, value: "4000"}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: lab53-svc}
+spec:
+  type: NodePort
+  selector: {app: lab53-app-WRONG}    # <- LỖI 2: không khớp label pod thật (lab53-app)
+  ports:
+  - {port: 80, targetPort: 9999, nodePort: 30099}   # <- LỖI 3: targetPort sai (container nghe ở 4000)
+
+$ kubectl apply -f lab53-broken.yaml
+$ curl http://192.168.56.102:30099/ -> (không kết nối được / timeout)
+
+=== TRIAGE — sửa từng lỗi theo thứ tự "từ trong ra ngoài" ===
+
+--- Lỗi 1: Pod có chạy được không? ---
+$ kubectl get pods -l app=lab53-app
+NAME                         READY   STATUS              AGE
+lab53-app-7875b7fd57-lm7rf   0/1     ErrImageNeverPull   27s
+
+$ kubectl describe pod -l app=lab53-app | grep -E 'Image:|Reason'
+Image:    docker.io/babymilk/frontend:1.0-typo
+Reason:   ErrImageNeverPull
+
+=> Sửa: image tag "1.0-typo" -> "1.0"
+$ kubectl apply -f lab53-broken.yaml
+$ kubectl get pods -l app=lab53-app
+NAME                         READY   STATUS    AGE
+lab53-app-5c469f4974-bxc28   1/1     Running   9s      <- Pod ĐÃ chạy được, nhưng...
+
+$ curl http://192.168.56.102:30099/ -> vẫn lỗi (còn 2 vấn đề nữa, chưa liên quan tới pod nữa)
+
+--- Lỗi 2: Pod chạy rồi, Service có thấy pod không? ---
+$ kubectl get endpoints lab53-svc
+NAME        ENDPOINTS   AGE
+lab53-svc   <none>      74s     <- RỖNG dù pod đã Running
+
+$ kubectl get pods -l app=lab53-app --show-labels
+lab53-app-5c469f4974-bxc28   ...   app=lab53-app,pod-template-hash=5c469f4974
+$ kubectl get svc lab53-svc -o jsonpath='{.spec.selector}'
+{"app":"lab53-app-WRONG"}       <- KHÔNG khớp "app=lab53-app" của pod thật
+
+=> Sửa: selector "lab53-app-WRONG" -> "lab53-app"
+$ kubectl apply -f lab53-broken.yaml
+$ kubectl get endpoints lab53-svc
+NAME        ENDPOINTS         AGE
+lab53-svc   10.0.1.145:9999   109s    <- CÓ endpoint rồi, nhưng port vẫn là 9999 (sai)
+
+$ curl http://192.168.56.102:30099/ -> vẫn lỗi (connection refused, port 9999 không có gì lắng nghe)
+
+--- Lỗi 3: Service có Endpoint rồi, nhưng đúng PORT chưa? ---
+$ kubectl get svc lab53-svc -o jsonpath='{.spec.ports}'
+[{"nodePort":30099,"port":80,"protocol":"TCP","targetPort":9999}]
+$ kubectl get pod -l app=lab53-app -o jsonpath='{.items[0].spec.containers[0].ports}'
+[{"containerPort":4000,"protocol":"TCP"}]     <- container thật nghe ở 4000, Service lại trỏ 9999
+
+=> Sửa: targetPort "9999" -> "4000"
+$ kubectl apply -f lab53-broken.yaml
+$ curl http://192.168.56.102:30099/healthz
+{"status":"ok","service":"frontend"}    HTTP 200    <- XONG, cả 3 lỗi đã sửa
+
+=== Bài học tổng hợp — quy trình triage tổng quát ===
+1. LUÔN sửa và verify TỪNG lỗi một, KHÔNG sửa hết 1 lượt rồi mới test — nếu sửa cả 3 cùng lúc, khi
+   test thành công sẽ KHÔNG biết chắc lỗi nào thực sự là nguyên nhân (có thể còn lỗi ẩn khác trùng
+   hợp bị che khuất bởi lỗi đã sửa trước đó).
+2. Thứ tự chẩn đoán hợp lý: (1) Pod có Running/Ready không (`kubectl get pods`, `describe` xem
+   Image/State/Reason) → (2) Nếu Pod Ready rồi mà vẫn không gọi được, kiểm tra Endpoint
+   (`kubectl get endpoints`) xem Service có "thấy" pod không (vấn đề selector) → (3) Nếu có Endpoint
+   rồi mà vẫn lỗi, so sánh `targetPort` của Service với `containerPort` THẬT của pod (vấn đề port).
+   Đây đúng là thứ tự từ NGUYÊN NHÂN GẦN NHẤT (bản thân container) ra XA NHẤT (routing layer).
+3. Mỗi lớp lỗi có TRIỆU CHỨNG khác nhau, giúp phân biệt ngay: image sai -> pod không Running
+   (ErrImagePull/ErrImageNeverPull); selector sai -> pod Running nhưng Endpoint rỗng; targetPort sai
+   -> Endpoint CÓ nhưng vẫn connection refused/timeout (vì trỏ sai cổng bên trong container).

@@ -1,0 +1,54 @@
+=== Lab 5.1 — Self-Healing App ===
+=== Drill an toàn (namespace default), mô phỏng app khởi động chậm (20s) ===
+
+apiVersion: v1
+kind: Pod
+metadata: {name: lab51-selfheal}
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ['sh', '-c', 'sleep 20 && touch /tmp/ready && while true; do sleep 5; done']
+    startupProbe:
+      exec: {command: ['sh', '-c', 'test -f /tmp/ready']}
+      periodSeconds: 5
+      failureThreshold: 10          # cho phép tới 50s (5s x 10 lần) để app khởi động xong
+    readinessProbe:
+      exec: {command: ['sh', '-c', 'test -f /tmp/ready']}
+      periodSeconds: 5
+    livenessProbe:
+      exec: {command: ['sh', '-c', 'test -f /tmp/ready']}
+      periodSeconds: 10
+
+$ kubectl apply -f lab51-pod.yaml
+
+=== Theo dõi tiến trình (chụp mỗi 6-7s) ===
+$ kubectl get pod lab51-selfheal
+NAME             READY   STATUS    RESTARTS   AGE
+lab51-selfheal   0/1     Running   0          10s     <- Running nhưng CHƯA Ready
+lab51-selfheal   0/1     Running   0          17s     <- vẫn 0/1, PHẢI vậy vì app chưa touch /tmp/ready
+lab51-selfheal   0/1     Running   0          25s
+lab51-selfheal   1/1     Running   0          32s     <- vừa đủ 20s init + vài giây probe check -> Ready
+
+=== Events xác nhận cơ chế startupProbe hoạt động đúng ===
+$ kubectl describe pod lab51-selfheal | tail
+Events:
+  Normal   Started    49s                kubelet   Started container app
+  Warning  Unhealthy  31s (x4 over 46s)  kubelet   Startup probe failed:
+(startup probe fail 4 LẦN liên tiếp trong lúc app còn init, nhưng pod KHÔNG bị kill/restart vì
+ failureThreshold=10 còn dư quota — đây chính là mục đích tồn tại của startupProbe)
+
+=== Bài học tổng hợp ===
+1. `readinessProbe` kiểu `exec` (file-based) khác `httpGet` (dùng cho toàn bộ service babymilk-shop):
+   phù hợp cho app KHÔNG có HTTP endpoint để check (batch job, worker process, hoặc app có cơ chế
+   tự báo "tôi sẵn sàng" bằng cách tạo 1 file cụ thể) — kubelet chạy lệnh TRONG container, exit code 0
+   = pass, khác 0 = fail.
+2. `startupProbe` giải quyết đúng vấn đề: app khởi động chậm (cold start, load config nặng, warm-up
+   cache...) mà KHÔNG có startupProbe sẽ bị `livenessProbe` (thường có `periodSeconds` ngắn, thiết kế
+   cho steady-state chứ không phải cold-start) hiểu nhầm là "app chết", giết và restart LIÊN TỤC,
+   không bao giờ khởi động xong nổi (crash loop giả). Có startupProbe: `livenessProbe`/`readinessProbe`
+   CHỈ bắt đầu tính từ sau khi `startupProbe` pass lần đầu — an toàn cho cả app khởi động nhanh lẫn chậm
+   mà không cần chỉnh `initialDelaySeconds` của livenessProbe quá cao (vốn sẽ làm chậm phản ứng khi
+   app thật sự bị treo sau khi đã chạy ổn định).
+3. `failureThreshold` x `periodSeconds` = tổng thời gian tối đa cho phép app "chưa sẵn sàng" trước khi
+   bị coi là fail — ở đây 10 x 5s = 50s, đủ dư cho app init 20s (có margin an toàn, không set sát nút).
