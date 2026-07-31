@@ -68,3 +68,91 @@ $ kubectl delete pod -n kube-system <cilium-pod-bị-kẹt>   (buộc tạo lạ
 - [ ] Thử lại Lab 4.2 vào lúc khác, có thể cần: (a) đảm bảo cả 2 node đều đã ổn định trước khi bật
       tính năng, (b) thử trên 1 node trước (không phải DaemonSet full cluster ngay), (c) hoặc tìm hiểu
       sâu hơn cơ chế cgroup-eBPF của Cilium trước khi thử lại để tránh lặp lại sự cố.
+
+=== LẦN THỬ LẠI #2 (ngày sau) — VẪN gặp sự cố y hệt, đã rollback thành công ===
+
+Bối cảnh trước khi thử: phát hiện thêm 1 vấn đề KHÔNG liên quan — node master bị kernel "soft lockup"
+lặp lại 14 lần trong ~4 tiếng (CPU#0/#1 kẹt 20s-1102s/lần, do containerd-shim), nghi ngờ do CPU
+tranh chấp giữa VM và máy Windows host (đang chạy nhiều việc nặng: build Docker image, session SSH...).
+Đã xác nhận: app babymilk (chạy hoàn toàn trên worker) KHÔNG bị ảnh hưởng bởi lockup của master.
+
+Chiến lược giảm rủi ro lần này: REBOOT worker chủ động TRƯỚC khi thử (để agent Cilium khởi động từ
+trạng thái sạch), thay vì chỉ reboot SAU KHI đã kẹt như lần 1. Giả thuyết: eBPF hook cũ tích tụ qua
+nhiều ngày là nguyên nhân.
+
+Kết quả: GIẢ THUYẾT SAI — dù đã reboot worker sạch ngay trước đó (~15 phút trước, hoàn toàn khỏe,
+2/2 Cilium Ready), agent Cilium trên worker VẪN kẹt y hệt lần 1 khi bật ingressController + restart
+DaemonSet:
+  - Init container "config" kẹt ở "Establishing connection to apiserver" tới https://10.96.0.1:443
+  - curl trực tiếp từ HOST worker tới CHÍNH ClusterIP đó -> HTTP 200 ngay lập tức (y hệt nghịch lý lần 1)
+  - Sau ~4 phút: Init:Error -> Init:CrashLoopBackOff (kịch bản y hệt, nhanh hơn lần 1 một chút)
+  - App babymilk: 100% KHÔNG downtime suốt quá trình (curl healthz liên tục đều 200)
+
+=> Kết luận mới: nguyên nhân KHÔNG phải do eBPF state "cũ, tích tụ qua ngày" như giả thuyết ban đầu,
+   mà nhiều khả năng là vấn đề CỐ HỮU trong cách Cilium 1.19.3 xử lý transition cgroup-eBPF
+   socket-redirect MỖI KHI agent restart với hostNetwork pod trên phiên bản/cấu hình cluster này —
+   dù agent "cũ" (trước restart) mới khởi động sạch 15 phút trước hay đã chạy nhiều ngày, kết quả
+   giống hệt nhau.
+
+Rollback lần này cũng phát hiện thêm 1 điều: y hệt lần 1, "cilium upgrade --set
+ingressController.enabled=false" ĐƠN THUẦN KHÔNG đủ để gỡ agent bị kẹt (agent mới tạo ra sau lệnh
+rollback vẫn kẹt y hệt ở init container "config"). Phải REBOOT WORKER LẦN NỮA mới dứt điểm — xác
+nhận thêm 1 lần nữa: reboot node là cách DUY NHẤT từng chứng minh hiệu quả, không có shortcut nào khác.
+
+Sau reboot lần 2: cả 2/2 Cilium agent Running, 5/5 pod babymilk Running trở lại bình thường
+(3 pod backend tự crash-loop vài lần do race điều kiện khởi động cùng lúc với Postgres — đã biết,
+tự phục hồi theo cơ chế backoff mặc định của K8s, xem mục "Bài học" ở Lab 1.3/README).
+
+=== Khuyến nghị cuối cùng (sau 2 lần thử) ===
+- Ingress trên Cilium 1.19.3 + cấu hình cluster này có vẻ KHÔNG ổn định để dùng — không nên thử
+  live lần 3 trên cluster đang chạy app thật nữa, rủi ro cao mà xác suất thành công thấp (2/2 lần
+  thất bại y hệt nhau).
+- Nếu thực sự cần Ingress, nên: (a) thử trên 1 cluster/VM test hoàn toàn tách biệt trước, (b) hoặc
+  thử nâng cấp Cilium lên version mới hơn (có thể đã fix bug này), (c) hoặc dùng Ingress Controller
+  KHÁC (ingress-nginx) thay vì Cilium's built-in — vốn không đụng chạm cùng 1 cơ chế eBPF của CNI.
+- NodePort (giải pháp hiện tại) vẫn là lựa chọn thực tế nhất cho cluster này.
+
+=== TÌM RA NGUYÊN NHÂN GỐC + THỬ THÀNH CÔNG VỚI ingress-nginx (ngay sau lần thử #2) ===
+
+Tra cứu GitHub issue của Cilium, tìm đúng issue mô tả CHÍNH XÁC triệu chứng gặp phải:
+  https://github.com/cilium/cilium/issues/44464
+  "cilium-agent stuck in init when upgrading to 1.19 and kube-proxy in ipvs mode"
+  -> Xác nhận: đây là BUG THẬT đã biết của Cilium (không phải do cluster/thao tác sai), xảy ra khi
+     RESTART/UPGRADE agent 1.19.x trong lúc cluster có kube-proxy — cài MỚI SẠCH Cilium 1.19 thì
+     KHÔNG bị. Khớp 100% với tình huống: mình luôn restart agent đang chạy sẵn (kube-proxy có sẵn
+     trên cluster), không phải cài mới.
+
+=> Quyết định: đổi hướng — dùng ingress-nginx (Ingress Controller RIÊNG, không gắn vào CNI agent)
+   thay vì cố sửa Cilium's built-in Ingress.
+
+$ curl -sL https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/baremetal/deploy.yaml -o ~/ingress-nginx-deploy.yaml
+$ kubectl apply -f ~/ingress-nginx-deploy.yaml
+
+Kết quả: THÀNH CÔNG NGAY LẦN ĐẦU.
+- Controller `1/1 Running` chỉ sau 31 giây, KHÔNG kẹt Init, KHÔNG CrashLoopBackOff.
+- Cilium (cả 2 agent) hoàn toàn KHÔNG bị đụng tới trong suốt quá trình (verify: `kubectl get pods
+  -n kube-system -l k8s-app=cilium` không đổi restart count/status trước-trong-sau khi cài).
+- Service `ingress-nginx-controller` tự động type NodePort (80:30369, 443:31810) — khớp sẵn convention
+  NodePort của cluster, không cần patch gì thêm.
+- Tạo Ingress thật (`babymilk-ingress`, host `babymilk.local` -> Service `frontend:4000`), verify:
+  - Host ĐÚNG (`curl -H "Host: babymilk.local"`) -> trả đúng data thật (200)
+  - Host SAI (`curl -H "Host: khong-ton-tai.local"`) -> trả đúng `404 Not Found` chuẩn nginx
+  -> Routing theo domain hoạt động chính xác, không phải fluke.
+  (Lưu ý: test qua path `/healthz` lúc đầu cho kết quả gây nhầm lẫn — cả Host đúng/sai đều trả 200 —
+  vì `/healthz` trùng với 1 endpoint nội bộ ingress-nginx tự trả lời không qua proxy. Phải test bằng
+  path thật của app, vd `/api/products`, mới thấy đúng hành vi 404 khi Host không khớp.)
+- Đã đưa vào PERMANENT: `k8s/base/80-ingress.yaml` (Ingress resource, quản lý qua Kustomize),
+  `kubectl diff -k overlays/prod` = 0 sau khi apply. `ingress-nginx` bản thân (668 dòng, third-party)
+  KHÔNG đưa vào Kustomize repo — coi là cluster add-on cài riêng, giống `metrics-server`/
+  `local-path-provisioner` (xem README.md mục "Môi trường hạ tầng").
+- NodePort `:30080` vẫn là đường truy cập CHÍNH cho app — Ingress là thêm 1 đường vào song song qua
+  domain, không thay thế.
+
+=== Bài học bổ sung ===
+5. Khi 1 thao tác K8s thất bại nhiều lần với TRIỆU CHỨNG GIỐNG HỆT NHAU, rất đáng để tra cứu xem có
+   phải bug đã biết của chính công cụ (không phải lỗi do mình) trước khi tiếp tục thử lại theo cách
+   cũ — tiết kiệm thời gian và tránh lặp lại rủi ro không cần thiết.
+6. "Ingress" và "Ingress Controller của 1 CNI cụ thể" là 2 thứ khác nhau — 1 CNI's built-in Ingress
+   Controller bị bug không có nghĩa Ingress nói chung không dùng được trên cluster đó; đổi sang
+   Ingress Controller độc lập (ingress-nginx) là hướng đi đúng khi nghi ngờ vấn đề nằm ở tầng
+   tích hợp CNI-agent, không phải ở tầng Ingress/HTTP routing.

@@ -1,0 +1,25 @@
+# Ingress qua ingress-nginx (cài riêng như add-on cluster, KHÔNG quản lý qua Kustomize —
+# xem README.md mục "Môi trường hạ tầng", giống metrics-server/local-path-provisioner).
+# Đã thử Cilium's built-in Ingress Controller 2 lần, cả 2 lần đều dính bug thật của Cilium 1.19.x
+# (agent kẹt khi restart cùng kube-proxy — xem lab/lab_4.2.txt) -> chuyển sang ingress-nginx, tách
+# biệt hoàn toàn khỏi CNI agent, không đụng lại vấn đề đó.
+# NodePort (Service frontend, :30080) vẫn là đường truy cập CHÍNH — Ingress này là thêm 1 đường
+# vào song song (qua domain "babymilk.local", cần khai trong /etc/hosts hoặc DNS nội bộ để dùng thật).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: babymilk-ingress
+  namespace: babymilk
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: babymilk.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 4000

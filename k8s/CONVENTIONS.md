@@ -242,6 +242,22 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
   thêm vào để luyện tập/demo vòng đời Helm. Nếu sau này quyết định đổi hẳn sang Helm làm chính thức,
   đó là thay đổi lớn cần bàn riêng, không tự ý làm.
 
+## 9b. Ingress — TUYỆT ĐỐI KHÔNG dùng Cilium's built-in Ingress Controller
+
+- Đã thử `cilium upgrade --set ingressController.enabled=true` **2 lần** (2 ngày khác nhau), cả 2
+  lần đều làm agent Cilium trên worker kẹt/CrashLoopBackOff — đây là **bug thật đã biết** của Cilium
+  1.19.x khi restart agent cùng lúc cluster có kube-proxy
+  ([issue #44464](https://github.com/cilium/cilium/issues/44464)). Chi tiết đầy đủ: `lab/lab_4.2.txt`.
+- **Dùng `ingress-nginx`** thay thế — Ingress Controller độc lập, không gắn vào CNI agent, đã cài
+  thành công (`controller-v1.15.1`, bản `baremetal`, NodePort `80:30369`/`443:31810`).
+  Coi là **cluster add-on cài riêng** (giống `metrics-server`/`local-path-provisioner`) —
+  **KHÔNG đưa manifest 668 dòng của ingress-nginx vào Kustomize repo**, chỉ document lệnh cài trong
+  README. Ngược lại, `Ingress` resource CỦA APP (`k8s/base/80-ingress.yaml`, route `babymilk.local`)
+  PHẢI qua Kustomize như mọi resource khác của app.
+- Nếu sau này Cilium ra version mới có thể đã fix bug này — vẫn KHÔNG tự ý thử lại
+  `ingressController.enabled=true` trên cluster đang chạy app thật mà không hỏi trước, vì lịch sử
+  2/2 lần thất bại giống hệt nhau.
+
 ---
 
 ## 10. Trước khi coi 1 thay đổi K8s là "xong" — checklist bắt buộc

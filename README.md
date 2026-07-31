@@ -6,7 +6,7 @@
 > (SecurityContext, resources, port, pattern 4-container, checklist verify...) để mọi thay đổi sau
 > này (kể cả do AI khác làm) vẫn nhất quán với phần đã có.
 
-## ✅ Trạng thái hiện tại: ĐANG CHẠY TRÊN K8S — NetworkPolicy + PVC + HPA + PostgreSQL + CronJob + Kustomize + Helm
+## ✅ Trạng thái hiện tại: ĐANG CHẠY TRÊN K8S — NetworkPolicy + PVC + HPA + PostgreSQL + CronJob + Kustomize + Helm + Ingress
 
 | | |
 |---|---|
@@ -42,7 +42,7 @@ user-service-57f98dc67-4qdq4       3/3     Running   0          k8s-worker1
 - [x] **ResourceQuota** — `babymilk-quota` (sized theo usage thật + margin, không chặn nhầm pod đang chạy), verify bằng cách tạo pod xin vượt quota → bị từ chối đúng luật. Chi tiết: `lab/lab_3.4.txt`.
 - [x] **NetworkPolicy Egress** — `default-deny-egress` + allow DNS + allow đúng luồng nội bộ; backend **không ra được internet** (verify: request treo tới timeout, không có response). Chi tiết: `lab/lab_4.3.txt`.
 - [x] **StorageClass động** — cài `local-path-provisioner`, verify dynamic provisioning + persistence thật (pod hoàn toàn khác, không ghi gì, vẫn đọc được data cũ). Chi tiết: `lab/lab_4.4.txt`.
-- [ ] **Ingress** — thử bật Cilium Ingress Controller, gặp sự cố hạ tầng thật (agent Cilium trên node worker kẹt >10 phút, phải reboot node để khắc phục) → đã **rollback**, chưa hoàn thành. Chi tiết đầy đủ (nguyên nhân + cách khắc phục): `lab/lab_4.2.txt`.
+- [x] **Ingress** — thử bật Cilium's built-in Ingress Controller **2 lần**, cả 2 lần đều gặp y hệt 1 bug thật của Cilium 1.19.x khi restart agent cùng kube-proxy ([issue #44464](https://github.com/cilium/cilium/issues/44464)) → **rollback** cả 2 lần, không downtime app. Chuyển sang **`ingress-nginx`** (tách biệt hoàn toàn khỏi CNI agent) — cài thành công ngay lần đầu, `1/1 Running` trong 31s, Cilium hoàn toàn không bị đụng tới. Tạo `Ingress` thật (`k8s/base/80-ingress.yaml`, host `babymilk.local` → `frontend:4000`), verify đúng: Host đúng trả data thật (200), Host sai trả `404 Not Found` chuẩn nginx — routing theo domain hoạt động chính xác. `kubectl diff -k` = 0 sau khi thêm permanent. Chi tiết đầy đủ 2 lần thử Cilium + lần thành công với nginx: `lab/lab_4.2.txt`.
 - [x] **12-Factor App** — soát lại theo [12factor.net](https://www.12factor.net/), đạt 11/12 (Config, Backing services, Build/release/run, Processes stateless, Port binding, Concurrency, Dev/prod parity, Logs, Admin processes đều đạt). Điểm thiếu duy nhất (**#9 Disposability** — graceful shutdown) đã fix: cả 4 service bắt `SIGTERM`/`SIGINT`, đóng HTTP server + connection pool trước khi thoát thay vì bị kill đột ngột. Verify thật bằng `kubectl delete pod` giữa lúc rolling update, thấy đúng log `SIGTERM received, shutting down gracefully...` → `server + db pool closed, exiting`.
 - [x] **Ảnh sản phẩm** — 7 ảnh PNG theo brand (`frontend/public/images/*.png`), migration `002_update_image_urls.sql` cập nhật `image_url` cho 14 sản phẩm đang có sẵn trong DB (chạy tự động qua `schema_migrations`, không cần thao tác tay). Bump `product-service:2.3`, `frontend:1.2`. Verify thật: log pod có `applied migration 002_update_image_urls.sql`, `curl /api/products` trả đúng `imageUrl`, `curl /images/nan.png` trả `HTTP 200, content-type: image/png`.
 
@@ -65,6 +65,10 @@ Cluster Kubernetes 2 node dựng bằng `kubeadm` trên 2 VM VirtualBox (không 
 - **CNI**: Cilium v1.19.3 (kèm Cilium Envoy DaemonSet) — thay cho Calico, dùng cho cả L3/L4 NetworkPolicy chuẩn K8s lẫn L7 HTTP-aware CiliumNetworkPolicy.
 - **metrics-server**: v0.8.1, cài thêm cho HPA (không có sẵn trong kubeadm), patch `--kubelet-insecure-tls` vì kubelet dùng cert tự ký.
 - **StorageClass**: `local-path` (Rancher `local-path-provisioner`) — dynamic provisioning thật, cài thêm vì cluster kubeadm không có sẵn.
+- **Ingress Controller**: `ingress-nginx` v1.15.1 (NodePort `80:30369`/`443:31810`) — cài đè lên sau khi Cilium's built-in Ingress Controller dính bug thật 2 lần (agent Cilium kẹt khi restart cùng kube-proxy trên Cilium 1.19.x — [issue #44464](https://github.com/cilium/cilium/issues/44464)). `ingress-nginx` chạy tách biệt hoàn toàn khỏi CNI agent nên không dính lại vấn đề đó. Cài bằng:
+  ```bash
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/baremetal/deploy.yaml
+  ```
 - **Helm**: cài trên node master (`helm version` v3.21.3) — dùng cho ví dụ luyện tập riêng (`lab/lab_5.4.txt`) **và** chart `k8s/helm/babymilk-shop/` deploy song song baby-milk-shop vào namespace riêng (`babymilk-helm`) để demo install/upgrade/rollback; namespace `babymilk`/prod thật vẫn do **Kustomize** quản lý chính thức.
 - **Network**: mỗi VM có 2 network adapter — NAT (ra internet) + Host-only Adapter (`192.168.56.0/24`, dùng cho giao tiếp giữa các node và từ máy host vào cluster).
 - **Vì master bị taint `control-plane:NoSchedule`**, toàn bộ app (kể cả baby-milk-shop) chỉ chạy được trên **node worker duy nhất** — ngân sách tài nguyên thực tế cho app: ~1.9 CPU / ~3.2GB RAM.
