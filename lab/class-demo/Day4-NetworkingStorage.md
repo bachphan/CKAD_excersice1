@@ -1,6 +1,6 @@
 # Day 4 — Services and Networking / Storage (CKAD 20%)
 
-Chạy trên **node master**. ⚠️ **Đọc kỹ cảnh báo ở Lab 4.2 trước khi demo cả ngày này.**
+Chạy trên **node master**.
 
 ---
 
@@ -83,50 +83,73 @@ kubectl delete -f lab41.yaml
 
 ## Lab 4.2 — Ingress Routing
 
-> ## ⚠️ CẢNH BÁO — KHÔNG DEMO LIVE PHẦN NÀY TRỪ KHI CÓ THỜI GIAN DƯ DẢ + BACKUP PLAN
->
-> Lần thử trước đó, bật Cilium Ingress Controller làm agent Cilium trên **chính node chạy app thật**
-> bị kẹt hơn 10 phút, cuối cùng phải **reboot cả node worker** mới khắc phục được (containerd restart
-> không đủ, vấn đề nằm ở cache eBPF tầng kernel). Trong lúc đó app KHÔNG downtime (nhờ Cilium giữ rule
-> cũ), nhưng bất kỳ pod MỚI nào cũng không schedule được (node bị Cilium tự taint).
->
-> **Khuyến nghị khi đứng lớp**: chỉ trình bày Ý TƯỞNG + đọc qua lệnh bên dưới, KHÔNG chạy thật, trừ khi:
-> - Có ít nhất 15-20 phút dự phòng nếu sự cố lặp lại
-> - Đã thông báo trước với lớp là phần này "có rủi ro, đang thử nghiệm"
-> - Biết chắc cách khắc phục (xem "Nếu sự cố xảy ra" bên dưới)
+**Mục tiêu**: Ingress Controller + Ingress resource, route theo domain (host-based routing), phân
+biệt với Service/NodePort (Lab 4.1) — Ingress hoạt động ở tầng L7 (HTTP/domain), Service ở tầng L4.
+**Ảnh hưởng**: `ingress-nginx` + `Ingress babymilk-ingress` **ĐÃ LÀ PERMANENT** (cluster add-on +
+`k8s/base/80-ingress.yaml`). Phần demo dưới đây CHỈ XEM LẠI + verify routing, không cần cài lại gì.
 
-### Lệnh sẽ chạy NẾU quyết định demo live
+> 📖 **Câu chuyện đáng kể khi giảng** (bài học thật, không phải lý thuyết suông): lần đầu thử bật
+> **Cilium's built-in Ingress Controller** (không phải ingress-nginx đang dùng), agent Cilium trên
+> chính node chạy app thật bị kẹt >10 phút, phải reboot cả node worker mới khắc phục — thử lại lần 2
+> vẫn kẹt y hệt. Tra GitHub thì ra đây là **bug thật đã biết** của Cilium 1.19.x khi restart agent
+> cùng lúc cluster có kube-proxy ([issue #44464](https://github.com/cilium/cilium/issues/44464)),
+> không phải lỗi thao tác. Giải pháp: đổi sang **ingress-nginx** (Ingress Controller RIÊNG, không
+> gắn vào CNI agent) — thành công ngay lần đầu, không đụng gì tới Cilium. **Bài học**: 1 CNI's
+> built-in Ingress Controller bị bug không có nghĩa "Ingress" nói chung không dùng được trên cluster
+> đó — đổi sang Controller độc lập là hướng đi đúng. Toàn bộ câu chuyện chi tiết (2 lần thử Cilium
+> thất bại + lần thành công với nginx): `lab/lab_4.2.txt`.
+
+### Xem hạ tầng Ingress đang có (không tạo gì mới)
 ```bash
-cilium upgrade --set ingressController.enabled=true \
-  --set ingressController.loadbalancerMode=shared \
-  --set ingressController.service.type=NodePort \
-  --set ingressController.service.insecureNodePort=30092 \
-  --set ingressController.service.secureNodePort=30093
-
-kubectl -n kube-system rollout restart daemonset cilium
-kubectl -n kube-system rollout restart deployment cilium-operator
-kubectl get pods -n kube-system -l k8s-app=cilium -o wide -w
+kubectl get pods -n ingress-nginx
+kubectl get svc -n ingress-nginx ingress-nginx-controller
+kubectl get ingress -n babymilk
 ```
+**Kết quả mong đợi**: controller `1/1 Running`, Service `type: NodePort` (port 80/443 map ra 2 NodePort
+ngẫu nhiên — ghi lại port `80:XXXXX/TCP` để dùng bước sau), `Ingress babymilk-ingress` có
+`CLASS: nginx`, `HOSTS: babymilk.local`.
 
-### Nếu sự cố xảy ra (agent kẹt "Init:0/6" quá 5 phút trên node worker)
+### Demo: routing THEO DOMAIN — đây là điểm khác biệt cốt lõi so với Service/NodePort
 ```bash
-# Bước 1: rollback config (thường KHÔNG đủ, nhưng thử trước)
-cilium upgrade --set ingressController.enabled=false
-kubectl delete pod -n kube-system -l k8s-app=cilium --field-selector spec.nodeName=k8s-worker1
+# Lấy NodePort thật của ingress-nginx (thay vì nhớ số cố định)
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[0].nodePort}')
+echo "Ingress NodePort: $INGRESS_PORT"
 
-# Bước 2: nếu vẫn kẹt, restart containerd (thường KHÔNG đủ)
-ssh bachpt1@192.168.56.102 "sudo systemctl restart containerd"
+# Host ĐÚNG -> route vào frontend, trả data thật
+curl -s -H "Host: babymilk.local" http://192.168.56.102:$INGRESS_PORT/api/products?limit=1
 
-# Bước 3: nếu vẫn kẹt, REBOOT hẳn node worker (cách chắc chắn nhất, ~1-2 phút gián đoạn)
-ssh bachpt1@192.168.56.102 "sudo reboot"
-# Đợi ~60-90s rồi kiểm tra:
-kubectl get nodes
-kubectl get pods -n kube-system -l k8s-app=cilium -o wide
-kubectl get pods -n babymilk
-curl -s http://192.168.56.102:30080/healthz
+# Host SAI (không khai trong Ingress) -> 404, KHÔNG route vào đâu cả
+curl -s -H "Host: khong-ton-tai.local" http://192.168.56.102:$INGRESS_PORT/api/products -w "\nHTTP: %{http_code}\n"
 ```
-**Kết quả mong đợi sau reboot**: cả 2 agent Cilium `1/1 Running`, taint hết, app tự phục hồi hoàn
-toàn, data Postgres còn nguyên (đã verify thật — xem `lab/lab_4.2.txt` gốc).
+**Kết quả mong đợi**: Host đúng trả JSON sản phẩm thật (200); Host sai trả `404 Not Found` (trang lỗi
+chuẩn của nginx, không phải lỗi app) — chứng minh Ingress Controller tự route theo `Host` header,
+đúng bản chất Ingress là L7 (HTTP-aware), khác Service/NodePort chỉ biết L4 (IP:port).
+
+> ⚠️ Lưu ý: đừng test bằng path `/healthz` — trùng với 1 endpoint nội bộ mà ingress-nginx tự trả lời
+> (không qua proxy) bất kể `Host` gì, dễ gây hiểu lầm là routing sai. Dùng path thật của app như
+> `/api/products` để thấy đúng hành vi 404 khi `Host` không khớp.
+
+### (Nếu muốn tự tay tạo lại) Nội dung Ingress resource — chỉ để tham khảo, KHÔNG cần apply lại
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: babymilk-ingress
+  namespace: babymilk
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: babymilk.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 4000
+```
 
 ---
 

@@ -81,6 +81,18 @@ kubectl delete pod lab51-selfheal
 ```bash
 kubectl logs -n babymilk deploy/product-service --tail=20
 ```
+> 📌 **Từ khi có pattern 4-container/pod** (init + app + sidecar + ambassador, mục 18 work_done.md):
+> lệnh trên KHÔNG cần `-c` vẫn đúng vì `product-service` (app chính) là container ĐẦU TIÊN trong pod
+> spec (mặc định `kubectl logs` không có `-c` sẽ lấy container đầu). Nhưng để xem log của **container
+> khác** trong CÙNG pod bắt buộc phải chỉ định `-c`:
+> ```bash
+> kubectl logs -n babymilk deploy/product-service -c log-shipper --tail=10   # sidecar đọc log node
+> kubectl logs -n babymilk deploy/product-service -c ambassador-nginx --tail=10   # nginx proxy
+> kubectl logs -n babymilk deploy/product-service -c init-config              # log init container
+> ```
+> Đây là điểm hay để nhấn mạnh khi giảng: pod nhiều container KHÔNG có "1 log duy nhất" — mỗi
+> container có log riêng, `kubectl logs` không kèm `-c` mặc định chỉ lấy container đầu tiên, dễ
+> nhầm là "log app" trong khi có thể đang xem nhầm container khác nếu thứ tự container đổi.
 
 ### Log của LẦN CHẠY TRƯỚC (chỉ có nếu container đã từng restart — kiểm tra RESTARTS trước)
 ```bash

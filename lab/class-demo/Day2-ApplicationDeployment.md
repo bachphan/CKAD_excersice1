@@ -14,16 +14,16 @@ tới khi pod mới Ready, KHÔNG downtime kể cả khi demo lỗi. Baseline hi
 ### Bước 0: Xác nhận baseline trước khi demo
 ```bash
 kubectl get deploy product-service -n babymilk -o jsonpath='{.spec.template.spec.containers[0].image}'
-# Kỳ vọng: docker.io/babymilk/product-service:2.2 (bản graceful shutdown, mục 17 work_done.md)
+# Kỳ vọng: docker.io/babymilk/product-service:2.3 (bản thêm ảnh sản phẩm, mục 20 work_done.md)
 ```
 
-### Bước 1: Rolling update thật 2 chiều (:2.2 -> :2.1 -> :2.2, cả 2 tag đều có sẵn trên worker)
+### Bước 1: Rolling update thật 2 chiều (:2.3 -> :2.2 -> :2.3, cả 2 tag đều có sẵn trên worker)
 ```bash
-kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.1 -n babymilk
+kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.2 -n babymilk
 kubectl rollout status deployment/product-service -n babymilk
 
-# verify xong thì quay lại :2.2 ngay
-kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.2 -n babymilk
+# verify xong thì quay lại :2.3 ngay
+kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.3 -n babymilk
 kubectl rollout status deployment/product-service -n babymilk
 ```
 **Giải thích**: `kubectl set image` chỉ đổi field `image`, không đụng gì khác trong spec. `rollout status`
@@ -38,8 +38,9 @@ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:41
 > - App chính giờ nghe ở `127.0.0.1:4101` (port gốc + 100), còn `ambassador-nginx` CHỈ bind
 >   **pod IP** ở port 4001 — từ trong app container gọi `localhost:4001` sẽ bị `Connection refused`.
 >   Verify loopback phải gọi **4101**, không phải 4001 như tài liệu cũ.
-> - Field `version` trong `/healthz` vẫn là `"2.1"` kể cả trên image `:2.2` (bản 2.2 chỉ thêm graceful
->   shutdown, không bump version string) — đừng expect "2.2" ở đây, check image tag là đủ.
+> - Field `version` trong `/healthz` là chuỗi **hardcode trong code** (`server.js`), KHÔNG tự đổi theo
+>   image tag — luôn thấy `"2.1"` dù đang chạy `:2.2` hay `:2.3`. Muốn biết đang chạy tag nào phải
+>   check `image` của Deployment, không dựa vào field này.
 
 ### Bước 3: MÔ PHỎNG deploy lỗi (tag không tồn tại)
 ```bash
@@ -58,7 +59,7 @@ kubectl rollout undo deployment/product-service -n babymilk
 kubectl rollout status deployment/product-service -n babymilk
 ```
 **Giải thích**: `rollout undo` (không chỉ định `--to-revision`) luôn quay về revision LIỀN TRƯỚC —
-ở đây đúng là quay lại `:2.1` (bản tốt trước khi thử `:bad-tag`), không phải `:2.0`.
+ở đây đúng là quay lại `:2.3` (bản tốt trước khi thử `:bad-tag`), không phải tag cũ hơn.
 
 ### Verify cuối
 ```bash
@@ -66,7 +67,7 @@ kubectl get deploy product-service -n babymilk -o jsonpath='{.spec.template.spec
 kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:4101/healthz
 curl -s http://192.168.56.102:30080/api/products -o /dev/null -w "%{http_code}\n"
 ```
-**Kết quả mong đợi**: image = `:2.2`, healthz trả `"status":"ok"` (version field vẫn ghi `"2.1"` —
+**Kết quả mong đợi**: image = `:2.3`, healthz trả `"status":"ok"` (version field vẫn ghi `"2.1"` —
 xem lưu ý ở Bước 2), catalog trả `200`.
 
 ---
@@ -282,3 +283,8 @@ kubectl kustomize overlays/dev | grep -E "^kind:|name: babymilk-dev|nodePort|max
 ```bash
 kubectl apply -k overlays/prod
 ```
+
+> 📌 **Bonus**: từ mục 18 work_done.md, dự án còn có 1 **Helm chart song song**
+> (`k8s/helm/babymilk-shop/`) — mirror y hệt `k8s/base` (kể cả pattern 4-container), deploy vào
+> namespace riêng `babymilk-helm`, dùng để luyện tập `helm install/upgrade/rollback` mà không đụng
+> app thật. Kustomize **vẫn là cách chính thức**, Helm chỉ thêm vào — xem README.md mục "Helm chart".

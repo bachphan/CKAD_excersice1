@@ -14,16 +14,17 @@ ssh bachpt1@192.168.56.103
 bash ~/ckad-demo/run-day1.sh    # Day 1 (19 check)
 bash ~/ckad-demo/run-day2.sh    # Day 2 (32 check, đụng app thật — tự revert về baseline)
 bash ~/ckad-demo/run-day3.sh    # Day 3 (15 check)
-bash ~/ckad-demo/run-day4.sh    # Day 4 (17 check — Lab 4.2 Ingress SKIP live theo cảnh báo)
+bash ~/ckad-demo/run-day4.sh    # Day 4 (22 check — Lab 4.2 Ingress chạy live thật qua ingress-nginx)
 bash ~/ckad-demo/run-day5.sh    # Day 5 (22 check)
 ```
 
 - An toàn chạy lại nhiều lần (idempotent, mỗi lab đều có Bước 0 cleanup).
-- Lab 4.2 (Ingress) script chỉ in lý thuyết, KHÔNG chạy live — đúng cảnh báo trong Day 4.
+- Lab 4.2 (Ingress) giờ chạy **live thật** — dùng `ingress-nginx` (đã cài permanent), không còn
+  Cilium's built-in Ingress (dính bug thật, đã đổi hướng — xem `lab/lab_4.2.txt`).
 - Nếu script Day nào báo FAIL cuối cùng: chạy `./restore-to-baseline.sh` để đưa cluster về chuẩn.
 - Các script đã được điều chỉnh cho khớp cluster hiện tại (multi-container pod, ResourceQuota,
-  egress NetworkPolicy...) — khác tài liệu gốc ở vài điểm, mỗi điểm đều có ghi chú 📌 trong script
-  và ⚠️ trong file Day tương ứng.
+  egress NetworkPolicy, image tag mới nhất...) — khác tài liệu gốc ở vài điểm, mỗi điểm đều có ghi
+  chú 📌 trong script và ⚠️ trong file Day tương ứng.
 
 ## Cách dùng khi demo trước lớp (thủ công, copy-paste từng khối)
 
@@ -47,7 +48,7 @@ bash ~/ckad-demo/run-day5.sh    # Day 5 (22 check)
 | `Day1-ApplicationDesignBuild.md` | Lab 1.1-1.4 | An toàn 100%, namespace `default` |
 | `Day2-ApplicationDeployment.md` | Lab 2.1-2.4 | Đụng `babymilk` thật — Lab 2.2 **bắt buộc** làm hết Bước revert trong lúc demo |
 | `Day3-SecurityConfig.md` | Lab 3.1-3.4 | Lab 3.2/3.4 chỉ XEM (đã permanent), 3.1/3.3 demo tạm |
-| `Day4-NetworkingStorage.md` | Lab 4.1-4.4 | ⚠️ **Lab 4.2 (Ingress) — đọc kỹ cảnh báo trước khi demo live** |
+| `Day4-NetworkingStorage.md` | Lab 4.1-4.4 | Lab 4.2 (Ingress) dùng `ingress-nginx`, đã permanent, demo live an toàn |
 | `Day5-ObservabilityExamPrep.md` | Lab 5.1-5.4 | An toàn, Lab 5.2 chỉ đọc (không đổi gì) |
 | `restore-to-baseline.sh` | Script khôi phục tổng | Chạy sau demo (hoặc bất cứ lúc nào nghi ngờ cluster bị lệch) |
 | `run-day1.sh` → `run-day5.sh` | Script chạy FULL tự động từng Day | Đã kiểm chứng PASS 100% trên cluster, xem mục phía trên |
@@ -57,5 +58,6 @@ bash ~/ckad-demo/run-day5.sh    # Day 5 (22 check)
 - Mọi resource demo tạo ra đều gắn label `created-by=ckad-lab` — để `restore-to-baseline.sh` quét
   xoá gọn bằng 1 lệnh, không cần nhớ tên từng thứ.
 - Các lab đã trở thành **tính năng permanent thật** của `babymilk-shop` (SecurityContext, ResourceQuota,
-  Egress NetworkPolicy, CronJob, Kustomize, HPA target 50%) — các file demo CHỈ XEM LẠI, không tạo lại.
+  Egress NetworkPolicy, CronJob, Kustomize, HPA target 50%, pattern 4-container/pod, Helm chart song
+  song, Ingress qua `ingress-nginx`) — các file demo CHỈ XEM LẠI, không tạo lại.
 - `restore-to-baseline.sh` an toàn chạy nhiều lần liên tiếp (idempotent) — không sợ chạy "lỡ tay".

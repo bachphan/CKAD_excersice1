@@ -7,6 +7,7 @@
 #   - 4 Deployment app + Postgres đúng image/replicas/resources/securityContext
 #   - HPA đúng min1/max3/target50%
 #   - NetworkPolicy (Ingress+Egress) + ResourceQuota + CronJob đúng cấu hình
+#   - Cilium 2/2 Running (không dính lại ingressController), ingress-nginx 1/1 Running
 #   - KHÔNG còn resource demo nào sót lại (pod/svc/job/secret/configmap tạm)
 #   - Service "frontend" không còn dính patch blue/green dở dang
 #
@@ -44,7 +45,7 @@ check() {
 }
 
 # ----------------------------------------------------------------------------
-step "BƯỚC 1/7 — Re-sync toàn bộ trạng thái PERMANENT qua Kustomize"
+step "BƯỚC 1/6 — Re-sync toàn bộ trạng thái PERMANENT qua Kustomize"
 # Đây là bước quan trọng nhất: chữa lành MỌI drift so với file đã commit
 # (image tag bị đổi dở, HPA maxReplicas/target bị chỉnh tay, CronJob schedule
 # bị đổi tạm để demo nhanh, replicas bị scale dở...) — vì Kustomize là nguồn
@@ -57,7 +58,7 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-step "BƯỚC 2/7 — Gỡ patch thủ công KHÔNG bị 'apply -k' tự dọn (blue/green)"
+step "BƯỚC 2/6 — Gỡ patch thủ công KHÔNG bị 'apply -k' tự dọn (blue/green)"
 # Lý do: kubectl apply chỉ xoá field đã từng khai báo qua apply trước đó rồi
 # bị bỏ đi trong file mới — field thêm bằng "kubectl patch" (như label "version"
 # gắn tay ở Lab 2.2) KHÔNG nằm trong lịch sử "last-applied", nên "apply -k"
@@ -69,7 +70,7 @@ kubectl patch deployment frontend -n babymilk --type=json \
   -p='[{"op":"remove","path":"/spec/template/metadata/labels/version"}]' >/dev/null 2>&1 && echo "  Đã gỡ 'version' khỏi Deployment frontend template" || echo "  (Deployment frontend không có patch 'version' — bỏ qua)"
 
 # ----------------------------------------------------------------------------
-step "BƯỚC 3/7 — Force scale về đúng baseline (không đợi HPA reconcile)"
+step "BƯỚC 3/6 — Force scale về đúng baseline (không đợi HPA reconcile)"
 # ----------------------------------------------------------------------------
 for d in product-service user-service order-service frontend postgres; do
   kubectl scale deployment "$d" -n babymilk --replicas=1 >/dev/null 2>&1
@@ -77,13 +78,13 @@ done
 echo "  Đã force scale 5 Deployment babymilk về replicas=1"
 
 # ----------------------------------------------------------------------------
-step "BƯỚC 4/7 — Quét sạch resource demo (label created-by=ckad-lab, mọi namespace)"
+step "BƯỚC 4/6 — Quét sạch resource demo (label created-by=ckad-lab, mọi namespace)"
 # ----------------------------------------------------------------------------
 kubectl delete pod,deployment,service,job,configmap,secret,pvc,serviceaccount,role,rolebinding \
   -l created-by=ckad-lab --all-namespaces --ignore-not-found=true 2>&1 | sed 's/^/  /'
 
 # ----------------------------------------------------------------------------
-step "BƯỚC 5/7 — Fallback: dọn theo TÊN CỐ ĐỊNH (phòng khi quên gắn label)"
+step "BƯỚC 5/6 — Fallback: dọn theo TÊN CỐ ĐỊNH (phòng khi quên gắn label)"
 # ----------------------------------------------------------------------------
 kubectl delete pod speedy-pod init-sidecar-demo lab-postgres injection-demo \
   lab51-selfheal lab44-writer lab44-reader quota-buster \
@@ -110,16 +111,7 @@ if command -v helm >/dev/null 2>&1; then
 fi
 
 # ----------------------------------------------------------------------------
-step "BƯỚC 6/7 — Đảm bảo Cilium Ingress Controller vẫn TẮT (phòng Lab 4.2)"
-# ----------------------------------------------------------------------------
-if command -v cilium >/dev/null 2>&1; then
-  cilium upgrade --set ingressController.enabled=false 2>&1 | tail -3 | sed 's/^/  /'
-else
-  yellow "  (không tìm thấy lệnh 'cilium' — bỏ qua bước này)"
-fi
-
-# ----------------------------------------------------------------------------
-step "BƯỚC 7/7 — Re-apply lần cuối để chắc chắn KHÔNG còn drift"
+step "BƯỚC 6/6 — Re-apply lần cuối để chắc chắn KHÔNG còn drift"
 # ----------------------------------------------------------------------------
 sleep 5
 if [ -d "$BABYMILK_K8S_DIR/overlays/prod" ]; then
@@ -148,6 +140,12 @@ check "Service frontend selector đúng {app:frontend} (không dính version blu
 
 HPA_MAX=$(kubectl get hpa product-service-hpa -n babymilk -o jsonpath='{.spec.maxReplicas}')
 check "HPA maxReplicas = 3" $([ "$HPA_MAX" = "3" ] && echo 0 || echo 1)
+
+CILIUM_READY=$(kubectl get pods -n kube-system -l k8s-app=cilium --no-headers 2>/dev/null | grep -c "1/1.*Running")
+check "Cilium 2/2 agent Running (không dính lại ingressController)" $([ "$CILIUM_READY" = "2" ] && echo 0 || echo 1)
+
+INGRESS_READY=$(kubectl get pods -n ingress-nginx --no-headers 2>/dev/null | grep -c "1/1.*Running")
+check "ingress-nginx controller 1/1 Running" $([ "$INGRESS_READY" -ge 1 ] && echo 0 || echo 1)
 
 curl -s -o /dev/null -w "" --max-time 5 "$NODEPORT_URL/healthz"
 check "Frontend healthz HTTP 200" $?

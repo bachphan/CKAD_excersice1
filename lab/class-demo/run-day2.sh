@@ -6,7 +6,8 @@
 # mọi thay đổi đều revert về baseline cuối script).
 #
 # ĐIỀU CHỈNH so với tài liệu gốc (cho khớp cluster hiện tại):
-#   - Baseline image hiện tại: product-service:2.2 (tài liệu gốc ghi :2.1)
+#   - Baseline image hiện tại: product-service:2.3 (tài liệu gốc ghi :2.1 — đã bump 2 lần:
+#     :2.2 graceful shutdown, :2.3 thêm ảnh sản phẩm, xem mục 17/20 work_done.md)
 #   - Lab 2.3: scale lên 2 thay vì 10 — vì giờ mỗi pod có 3 container +
 #     ResourceQuota limits.cpu (1800m) chỉ còn dư ~350m (xem giải thích trong script)
 # ============================================================================
@@ -54,28 +55,28 @@ step "LAB 2.1 — Rolling Update & Rollback (product-service)"
 step "2.1-B0: Xác nhận baseline image"
 CUR_IMG=$(kubectl get deploy product-service -n $NS -o jsonpath='{.spec.template.spec.containers[0].image}')
 echo "    Baseline hiện tại: $CUR_IMG"
-check "Baseline là product-service:2.2" $([ "$CUR_IMG" = "docker.io/babymilk/product-service:2.2" ] && echo 0 || echo 1)
+check "Baseline là product-service:2.3" $([ "$CUR_IMG" = "docker.io/babymilk/product-service:2.3" ] && echo 0 || echo 1)
 
-step "2.1-B1: Rolling update THẬT xuống :2.1 (bản cũ hơn, vẫn còn trên worker)"
-run "kubectl set image -> :2.1" \
-  "kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.1 -n $NS"
+step "2.1-B1: Rolling update THẬT xuống :2.2 (bản cũ hơn, vẫn còn trên worker)"
+run "kubectl set image -> :2.2" \
+  "kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.2 -n $NS"
 run "Theo dõi rollout" "kubectl rollout status deployment/product-service -n $NS --timeout=120s"
-check "Rollout :2.1 hoàn tất" $?
+check "Rollout :2.2 hoàn tất" $?
 
 step "2.1-B2: Verify version (exec loopback — /healthz không nằm trong NetworkPolicy)"
 yellow "  📌 Lưu ý: từ khi có ambassador pattern, app nghe ở 127.0.0.1:4101,"
 yellow "     ambassador-nginx CHỈ bind pod IP:4001 (localhost:4001 từ app bị từ chối)"
 run "healthz từ trong pod (port app thật 4101)" "kubectl exec -n $NS deploy/product-service -- wget -qO- http://localhost:4101/healthz"
 kubectl exec -n $NS deploy/product-service -- wget -qO- http://localhost:4101/healthz 2>/dev/null | grep -q '"version":"2.1"'
-check "healthz báo version 2.1" $?
+check "healthz báo version 2.1 (chuỗi hardcode trong code, không đổi theo tag)" $?
 
-step "2.1-B3: Rolling update NGƯỢC LÊN lại :2.2"
-run "kubectl set image -> :2.2" \
-  "kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.2 -n $NS"
+step "2.1-B3: Rolling update NGƯỢC LÊN lại :2.3"
+run "kubectl set image -> :2.3" \
+  "kubectl set image deployment/product-service product-service=docker.io/babymilk/product-service:2.3 -n $NS"
 run "Theo dõi rollout" "kubectl rollout status deployment/product-service -n $NS --timeout=120s"
-check "Rollout :2.2 hoàn tất" $?
+check "Rollout :2.3 hoàn tất" $?
 kubectl exec -n $NS deploy/product-service -- wget -qO- http://localhost:4101/healthz 2>/dev/null | grep -q '"status":"ok"'
-check "healthz trả ok (lưu ý: version field vẫn ghi 2.1 — image 2.2 không đổi version string)" $?
+check "healthz trả ok (lưu ý: version field vẫn ghi 2.1 — không đổi theo image tag)" $?
 
 step "2.1-B4: MÔ PHỎNG deploy lỗi (tag không tồn tại) — app KHÔNG downtime"
 run "set image -> :bad-tag" \
@@ -89,14 +90,14 @@ check "APP VẪN PHỤC VỤ bình thường giữa deploy lỗi (catalog 200)" 
 
 step "2.1-B5: Rollback"
 run "Lịch sử rollout" "kubectl rollout history deployment/product-service -n $NS"
-run "rollout undo (quay về revision liền trước = :2.2)" "kubectl rollout undo deployment/product-service -n $NS"
+run "rollout undo (quay về revision liền trước = :2.3)" "kubectl rollout undo deployment/product-service -n $NS"
 run "Theo dõi rollback" "kubectl rollout status deployment/product-service -n $NS --timeout=120s"
 check "Rollback hoàn tất" $?
 
 step "2.1-B6: Verify cuối"
 CUR_IMG=$(kubectl get deploy product-service -n $NS -o jsonpath='{.spec.template.spec.containers[0].image}')
 echo "    Image sau rollback: $CUR_IMG"
-check "Image về đúng :2.2" $([ "$CUR_IMG" = "docker.io/babymilk/product-service:2.2" ] && echo 0 || echo 1)
+check "Image về đúng :2.3" $([ "$CUR_IMG" = "docker.io/babymilk/product-service:2.3" ] && echo 0 || echo 1)
 CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$NODEPORT/api/products")
 check "Catalog trả 200" $([ "$CODE" = "200" ] && echo 0 || echo 1)
 

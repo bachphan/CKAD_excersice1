@@ -4,13 +4,12 @@
 # Chạy FULL tự động trên node master, show kết quả từng bước.
 # Bám sát Day4-NetworkingStorage.md.
 #
-# ⚠ LAB 4.2 (Ingress): SKIP LIVE DEMO theo đúng cảnh báo trong tài liệu —
-#   lần chạy trước làm agent Cilium kẹt, phải reboot node worker. Script này
-#   chỉ IN phần lý thuyết + lệnh tham khảo, KHÔNG chạy cilium upgrade.
+# LAB 4.2 (Ingress): dùng ingress-nginx (ĐÃ PERMANENT trên cluster) — chỉ xem + verify routing,
+#   KHÔNG chạy cilium upgrade (Cilium's built-in Ingress dính bug thật, xem lab/lab_4.2.txt).
 # ============================================================================
 
 set -uo pipefail
-PASS=0; FAIL=0; SKIP=0
+PASS=0; FAIL=0
 green()  { echo -e "\033[32m$1\033[0m"; }
 red()    { echo -e "\033[31m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; }
@@ -111,33 +110,37 @@ step "4.1-B4: Cleanup"
 run "Xoá lab41" "kubectl delete -f /tmp/lab41.yaml; rm -f /tmp/lab41.yaml"
 
 # ============================================================================
-step "LAB 4.2 — Ingress Routing — ⏭ SKIP LIVE DEMO (theo cảnh báo tài liệu)"
+step "LAB 4.2 — Ingress Routing (ingress-nginx — ĐÃ PERMANENT, chỉ xem + verify)"
 # ============================================================================
-red "  ╔══════════════════════════════════════════════════════════╗"
-red "  ║  ⚠ KHÔNG CHẠY LIVE — lần trước bật Cilium Ingress làm    ║"
-red "  ║  agent Cilium trên node worker (node chạy TOÀN BỘ app)   ║"
-red "  ║  kẹt >10 phút, phải REBOOT node mới khắc phục được.      ║"
-red "  ║  Chi tiết: lab/lab_4.2.txt + Day4-NetworkingStorage.md   ║"
-red "  ╚══════════════════════════════════════════════════════════╝"
-echo ""
-echo "  📖 Lý thuyết (chỉ đọc, không chạy):"
-echo "     Cluster chưa có IngressClass nào. Cilium có Ingress Controller"
-echo "     nhưng KHÔNG bật mặc định. Lệnh sẽ chạy NẾU demo live:"
-echo ""
-echo "     \$ cilium upgrade --set ingressController.enabled=true \\"
-echo "         --set ingressController.loadbalancerMode=shared \\"
-echo "         --set ingressController.service.type=NodePort \\"
-echo "         --set ingressController.service.insecureNodePort=30092 \\"
-echo "         --set ingressController.service.secureNodePort=30093"
-echo "     \$ kubectl -n kube-system rollout restart daemonset cilium"
-echo ""
-echo "     Nếu sự cố lặp lại (agent kẹt Init:0/6 >5 phút trên worker):"
-echo "       1. cilium upgrade --set ingressController.enabled=false"
-echo "       2. ssh worker 'sudo systemctl restart containerd'  (thường không đủ)"
-echo "       3. ssh worker 'sudo reboot'                        (chắc chắn nhất)"
-echo ""
-SKIP=$((SKIP+1))
-yellow "  ⏭ SKIP: Lab 4.2 — chỉ trình bày lý thuyết (anh toàn theo tài liệu)"
+yellow "  📖 Cilium's built-in Ingress Controller dính bug thật 2 lần (agent kẹt khi"
+yellow "     restart cùng kube-proxy — github.com/cilium/cilium/issues/44464), đã đổi"
+yellow "     sang ingress-nginx (Controller riêng, không đụng CNI agent). Chi tiết:"
+yellow "     lab/lab_4.2.txt"
+
+step "4.2-B1: Xem hạ tầng Ingress đang có (không tạo gì mới)"
+run "Pod ingress-nginx-controller" "kubectl get pods -n ingress-nginx"
+kubectl get pods -n ingress-nginx --no-headers | grep -q "1/1.*Running"
+check "ingress-nginx-controller 1/1 Running" $?
+run "Ingress babymilk-ingress" "kubectl get ingress -n babymilk"
+kubectl get ingress babymilk-ingress -n babymilk --no-headers >/dev/null 2>&1
+check "Ingress babymilk-ingress tồn tại" $?
+
+step "4.2-B2: Demo routing THEO DOMAIN — khác biệt cốt lõi so với Service/NodePort (Lab 4.1)"
+INGRESS_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[0].nodePort}')
+echo "    Ingress NodePort: $INGRESS_PORT"
+run "Host ĐÚNG (babymilk.local) -> route vào frontend" \
+  "curl -s -H 'Host: babymilk.local' http://192.168.56.102:$INGRESS_PORT/api/products?limit=1"
+CODE=$(curl -s -H "Host: babymilk.local" -o /dev/null -w "%{http_code}" --max-time 5 "http://192.168.56.102:$INGRESS_PORT/api/products")
+check "Host đúng trả 200 (route thành công vào frontend)" $([ "$CODE" = "200" ] && echo 0 || echo 1)
+run "Host SAI (không khai trong Ingress) -> 404" \
+  "curl -s -H 'Host: khong-ton-tai.local' http://192.168.56.102:$INGRESS_PORT/api/products -w '\nHTTP: %{http_code}\n'"
+CODE=$(curl -s -H "Host: khong-ton-tai.local" -o /dev/null -w "%{http_code}" --max-time 5 "http://192.168.56.102:$INGRESS_PORT/api/products")
+check "Host sai trả 404 (Ingress route đúng theo domain, không phải fallback bừa)" $([ "$CODE" = "404" ] && echo 0 || echo 1)
+
+step "4.2-B3: Cilium hoàn toàn không bị đụng tới (verify không có tác dụng phụ)"
+run "Cilium agent" "kubectl get pods -n kube-system -l k8s-app=cilium"
+N_READY=$(kubectl get pods -n kube-system -l k8s-app=cilium --no-headers | grep -c "1/1.*Running")
+check "Cả 2 Cilium agent vẫn 1/1 Running" $([ "$N_READY" = "2" ] && echo 0 || echo 1)
 
 # ============================================================================
 step "LAB 4.3 — NetworkPolicy Isolation Egress (ĐÃ PERMANENT — xem + verify)"
@@ -273,7 +276,7 @@ run "Không còn resource demo sót" \
 echo ""
 echo "============================================================"
 if [ "$FAIL" -eq 0 ]; then
-  green "✅ DAY 4 HOÀN THÀNH — $PASS CHECK PASS, $SKIP LAB SKIP (4.2 Ingress, theo cảnh báo)"
+  green "✅ DAY 4 HOÀN THÀNH — TẤT CẢ $PASS CHECK PASS (kể cả Lab 4.2 Ingress)"
 else
   red "❌ DAY 4: $FAIL/$((PASS+FAIL)) CHECK FAIL — xem log phía trên"
 fi
