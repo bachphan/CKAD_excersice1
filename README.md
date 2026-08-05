@@ -271,16 +271,21 @@ k8s/
 │   ├── 00-namespace.yaml
 │   ├── 01-configmap.yaml
 │   ├── 02-secret.yaml.example   # copy thành 02-secret.yaml (gitignored), apply riêng, KHÔNG qua kustomize
-│   ├── 10-product-service.yaml
-│   ├── 11-user-service.yaml
-│   ├── 12-order-service.yaml
-│   ├── 13-frontend.yaml         # Service NodePort :30080
+│   ├── 05-ambassador-nginx-config.yaml  # ConfigMap nginx.conf cho container ambassador (4 service)
+│   ├── 10-product-service.yaml  # Deployment 4-container (init+app+sidecar+ambassador) + Service
+│   ├── 11-user-service.yaml     # (cùng pattern 4-container)
+│   ├── 12-order-service.yaml    # (cùng pattern 4-container)
+│   ├── 13-frontend.yaml         # (cùng pattern 4-container) — Service NodePort :30080
 │   ├── 20-networkpolicy.yaml    # NetworkPolicy Ingress L3/L4 + CiliumNetworkPolicy L7
 │   ├── 21-networkpolicy-egress.yaml  # NetworkPolicy Egress (default-deny + allow DNS/nội bộ)
 │   ├── 30-pv-pvc.yaml           # PV/PVC Postgres (hostPath static)
 │   ├── 40-hpa.yaml              # HPA product-service (min1/max3, CPU 50%)
+│   ├── 50-postgres.yaml         # Deployment Postgres 16 + Service + ConfigMap init-databases
 │   ├── 60-stock-monitor.yaml    # CronJob cảnh báo tồn kho thấp
-│   └── 70-resourcequota.yaml    # ResourceQuota namespace babymilk
+│   ├── 61-stock-monitor-rbac.yaml    # ServiceAccount+Role+RoleBinding riêng cho CronJob (RBAC thật)
+│   ├── 70-resourcequota.yaml    # ResourceQuota namespace babymilk
+│   ├── 71-limitrange.yaml       # LimitRange namespace babymilk (đi kèm ResourceQuota)
+│   └── 80-ingress.yaml          # Ingress babymilk-ingress (2 path -> 2 backend khác nhau)
 └── overlays/
     ├── prod/kustomization.yaml  # resources: [../../base], KHÔNG patch — đúng cấu hình chạy thật
     └── dev/kustomization.yaml   # namespace babymilk-dev, NodePort 30090, HPA max=1, CronJob suspend
@@ -336,11 +341,12 @@ kubectl delete namespace babymilk-helm
 ### Việc có thể làm tiếp (chưa làm — ngoài phạm vi hiện tại)
 
 - [ ] `PodDisruptionBudget`.
-- [ ] Ingress (Cilium có sẵn Ingress support) thay cho NodePort — đã thử 1 lần, gặp sự cố hạ tầng (Cilium agent kẹt), đã rollback. Cần thử lại cẩn thận hơn (xem `lab/lab_4.2.txt` để biết chi tiết + rủi ro).
 - [ ] Load test mạnh hơn (nhiều pod song song / công cụ như `k6`, `hey`) để thực sự quan sát HPA scale-up — app hiện tại quá nhẹ nên chưa chạm ngưỡng CPU 50% trong test thủ công (đã scale tay lên 10 replicas để test riêng phần scale, xem `lab/lab_2.3.txt`).
-- [ ] Thêm init container `wait-for-postgres` cho 3 backend — hiện tại nếu Postgres chưa sẵn sàng lúc pod backend start, pod sẽ crash rồi tự retry theo cơ chế restart mặc định của K8s (chấp nhận được, nhưng init container sẽ gọn hơn).
+- [ ] Thêm init container `wait-for-postgres` cho 3 backend — hiện tại nếu Postgres chưa sẵn sàng lúc pod backend start, pod sẽ crash rồi tự retry theo cơ chế restart mặc định của K8s (chấp nhận được, nhưng init container sẽ gọn hơn). Lưu ý: KHÔNG nhầm với `init-config` hiện có — container đó chỉ ghi tóm tắt config, không chờ Postgres.
 - [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật, và có đủ tài nguyên apply thật overlay `dev` song song với `prod`.
+- [ ] Đồng bộ Helm chart (`k8s/helm/babymilk-shop/`) với 3 bổ sung mới nhất (LimitRange, RBAC stock-monitor, Ingress 2-path) — hiện các resource này mới chỉ có ở `k8s/base` (Kustomize), chưa có trong Helm chart.
 - [x] ~~Tăng `timeoutSeconds` cho readiness/liveness probe~~ — đã fix, `timeoutSeconds: 3` cho cả 4 Deployment (Lab 3.2).
+- [x] ~~Ingress~~ — đã xong qua `ingress-nginx` (xem checklist "Trạng thái hiện tại" ở đầu file + `lab/lab_4.2.txt`).
 
 ## Cấu trúc thư mục
 
