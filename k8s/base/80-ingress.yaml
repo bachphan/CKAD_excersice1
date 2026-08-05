@@ -5,6 +5,13 @@
 # biệt hoàn toàn khỏi CNI agent, không đụng lại vấn đề đó.
 # NodePort (Service frontend, :30080) vẫn là đường truy cập CHÍNH — Ingress này là thêm 1 đường
 # vào song song (qua domain "babymilk.local", cần khai trong /etc/hosts hoặc DNS nội bộ để dùng thật).
+#
+# 2 path route tới 2 Service KHÁC NHAU (minh hoạ path-based routing thật của Ingress, không chỉ
+# 1 backend duy nhất):
+#   /api/products  -> product-service thẳng (bỏ qua frontend gateway) — chỉ GET, xem CiliumNetworkPolicy
+#                     product-internal-l7 (20-networkpolicy.yaml) đã mở quyền riêng cho ingress-nginx
+#   /              -> frontend (gateway + static site) — catch-all, giữ nguyên hành vi cũ
+# nginx tự ưu tiên path CỤ THỂ HƠN (/api/products) trước path chung (/), không phụ thuộc thứ tự khai.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -16,6 +23,13 @@ spec:
   - host: babymilk.local
     http:
       paths:
+      - path: /api/products
+        pathType: Prefix
+        backend:
+          service:
+            name: product-service
+            port:
+              number: 4001
       - path: /
         pathType: Prefix
         backend:

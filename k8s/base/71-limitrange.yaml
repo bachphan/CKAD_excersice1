@@ -1,0 +1,29 @@
+# LimitRange cho namespace babymilk — đi kèm ResourceQuota (70-resourcequota.yaml).
+# Mọi container trong dự án đã tự khai requests/limits tường minh (bắt buộc bởi ResourceQuota),
+# nên default/defaultRequest ở đây chủ yếu là lưới an toàn cho container MỚI lỡ quên khai —
+# còn min/max thì áp dụng NGAY cho mọi container, kể cả container đã khai giá trị cụ thể (nếu
+# nằm ngoài dải min/max sẽ bị admission control từ chối tạo).
+#
+# Dải min/max chọn theo giá trị THẬT đang dùng trong 4 Deployment (xem k8s/CONVENTIONS.md mục 5):
+# nhỏ nhất là init-config/log-shipper (10m/16Mi), lớn nhất là postgres (300m/384Mi) — max để dư
+# chút cho an toàn, không sát ngưỡng hiện tại.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: babymilk-limits
+  namespace: babymilk
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: "150m"
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "50m"
+      memory: "64Mi"
+    min:
+      cpu: "10m"
+      memory: "16Mi"
+    max:
+      cpu: "500m"
+      memory: "512Mi"

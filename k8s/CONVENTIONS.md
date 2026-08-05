@@ -222,6 +222,17 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
   lẫn egress), không dựa vào rule sẵn có của service khác. `product-service` dùng thêm
   CiliumNetworkPolicy L7 để giới hạn theo HTTP method/path — chỉ dùng L7 khi cần phân biệt path,
   còn lại dùng NetworkPolicy L3/L4 chuẩn K8s là đủ.
+- **Pod cần gọi K8s API (RBAC) trong namespace có `default-deny-egress`**: NetworkPolicy chuẩn K8s
+  với `podSelector` **KHÔNG match được** `kube-apiserver` vì nó chạy `hostNetwork: true` (không có
+  pod IP riêng trong overlay network) — đã thử thật, bị `timeout` (xem `61-stock-monitor-rbac.yaml`).
+  Bắt buộc dùng `CiliumNetworkPolicy` với `egress: [{toEntities: [kube-apiserver]}]` — entity đặc
+  biệt CHỈ Cilium mới có, đúng cho chính xác case này. RBAC (SA+Role+RoleBinding) đúng KHÔNG đủ —
+  vẫn phải có rule egress riêng, 2 lớp độc lập nhau.
+- **Cross-namespace `fromEndpoints` trong CiliumNetworkPolicy**: muốn cho phép traffic từ pod ở
+  namespace KHÁC (vd `ingress-nginx` gọi vào `babymilk`), phải khai namespace tường minh trong
+  `matchLabels` qua nhãn dành riêng `k8s:io.kubernetes.pod.namespace: <namespace>`, kèm theo label
+  thật của pod đó — không đơn thuần `matchLabels` như trong cùng namespace (mặc định chỉ match
+  cùng namespace với policy).
 
 ---
 

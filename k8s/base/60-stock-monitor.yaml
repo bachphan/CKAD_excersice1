@@ -25,6 +25,25 @@ spec:
             app: stock-monitor
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: stock-monitor-sa
+          initContainers:
+          - name: check-product-service-up
+            image: bitnami/kubectl:latest
+            imagePullPolicy: IfNotPresent
+            command: ["sh", "-c"]
+            args:
+              - |
+                echo "Kiểm tra product-service có Pod Running không trước khi gọi API..."
+                kubectl get pods -n babymilk -l app=product-service --field-selector=status.phase=Running -o name | grep -q pod/ || \
+                  { echo "product-service KHÔNG có Pod Running -> dừng sớm (fail-fast)"; exit 1; }
+                echo "OK — product-service đang Running, tiếp tục gọi API."
+            resources:
+              requests:
+                cpu: 20m
+                memory: 32Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
           containers:
           - name: stock-check
             image: busybox:1.36

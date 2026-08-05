@@ -149,3 +149,19 @@ spec:
         http:
         - method: "GET"
           path: "/api/.*"
+  # 80-ingress.yaml: route thẳng /api/products -> product-service (không qua frontend gateway),
+  # đúng yêu cầu Ingress phải có ≥2 path/host tới backend KHÁC NHAU. ingress-nginx chạy ở
+  # namespace khác (ingress-nginx) -> phải khai namespace qua nhãn dành riêng k8s:io.kubernetes.pod.namespace
+  # (cú pháp Cilium cho fromEndpoints xuyên namespace). CHỈ cho GET, không cho sửa/xoá qua đường tắt này.
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: ingress-nginx
+        app.kubernetes.io/name: ingress-nginx
+    toPorts:
+    - ports:
+      - port: "4001"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/.*"

@@ -110,7 +110,10 @@ spec:
     ports:
     - port: 4001
 ---
-# stock-monitor (CronJob): chỉ được gọi sang product-service, không ra internet
+# stock-monitor (CronJob): chỉ được gọi sang product-service, không ra internet.
+# (Egress tới kube-apiserver cho init container RBAC nằm riêng ở CiliumNetworkPolicy —
+# 61-stock-monitor-rbac.yaml — vì kube-apiserver chạy hostNetwork, NetworkPolicy chuẩn K8s
+# với podSelector KHÔNG match được, phải dùng toEntities: kube-apiserver của Cilium.)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

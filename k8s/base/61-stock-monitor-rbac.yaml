@@ -1,0 +1,54 @@
+# RBAC riêng cho CronJob "stock-monitor" (60-stock-monitor.yaml) — least-privilege: CHỈ được
+# get/list Pod trong CHÍNH namespace babymilk, không có quyền gì khác (không sửa/xoá, không đụng
+# resource nào khác, không có quyền ở namespace khác).
+#
+# Vì sao Job cần gọi K8s API: trước khi gọi API tồn kho của product-service, init container kiểm
+# tra product-service có Pod nào đang Running không — tránh phí thời gian retry HTTP nếu service
+# rõ ràng đang down hoàn toàn (fail-fast, thấy lỗi rõ ràng hơn trong log Job).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stock-monitor-sa
+  namespace: babymilk
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stock-monitor-role
+  namespace: babymilk
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stock-monitor-binding
+  namespace: babymilk
+subjects:
+- kind: ServiceAccount
+  name: stock-monitor-sa
+  namespace: babymilk
+roleRef:
+  kind: Role
+  name: stock-monitor-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cho phép init container "check-product-service-up" gọi K8s API server. kube-apiserver chạy
+# hostNetwork: true (không có pod IP riêng trong overlay network) nên NetworkPolicy chuẩn K8s với
+# podSelector KHÔNG match được (đã thử, bị timeout thật — xem work_done.md) — phải dùng
+# toEntities: kube-apiserver, entity đặc biệt CHỈ CiliumNetworkPolicy mới có, chính xác dành cho
+# case "cho phép egress tới API server" trong cluster có default-deny-egress.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-stock-monitor-egress-apiserver
+  namespace: babymilk
+spec:
+  endpointSelector:
+    matchLabels:
+      app: stock-monitor
+  egress:
+  - toEntities:
+    - kube-apiserver
