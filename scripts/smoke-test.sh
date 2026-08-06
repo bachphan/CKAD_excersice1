@@ -95,14 +95,17 @@ HPA_INFO=$(ssh_master "kubectl get hpa product-service-hpa -n babymilk -o jsonpa
 echo "    HPA product-service-hpa: $HPA_INFO"
 check "P4: HPA tồn tại trên >=1 Deployment" $([ -n "$HPA_INFO" ] && echo 0 || echo 1)
 
-DIFF_LINES=$(ssh_master "cd ~/babymilk-k8s 2>/dev/null && kubectl diff -k overlays/prod 2>&1 | wc -l" 2>&1)
-echo "    kubectl diff -k overlays/prod: $DIFF_LINES dòng khác biệt"
-check "P5: Kustomize base+overlay khớp 100% cluster thật (diff=0)" $([ "$DIFF_LINES" = "0" ] && echo 0 || echo 1)
+KUSTOMIZE_RENDER=$(ssh_master "cd ~/babymilk-k8s 2>/dev/null && kubectl kustomize overlays/prod >/dev/null 2>&1; echo \$?")
+echo "    kubectl kustomize overlays/prod render exit code: $KUSTOMIZE_RENDER"
+check "P5: Kustomize base+overlay render sạch, không lỗi (giữ trong repo để đáp ứng yêu cầu, KHÔNG còn là cách deploy live — xem P6/README)" $([ "$KUSTOMIZE_RENDER" = "0" ] && echo 0 || echo 1)
 
-yellow "  📌 P2 (rolling update), P3 (blue/green), P6 (Helm install/upgrade/rollback): đã test"
-yellow "     thật, có transcript đầy đủ — xem lab/lab_2.1.txt, lab/lab_2.2.txt, README.md mục"
-yellow "     'Helm chart'. Không test live ở đây vì có thay đổi tạm thời trên Deployment thật"
-yellow "     (dù luôn tự revert) — không phù hợp chạy trong lúc đang demo cho người khác xem."
+HELM_RELEASES=$(ssh_master "helm list -A --no-headers 2>&1 | grep -c '\-live\|babymilk-infra'" 2>&1)
+echo "    Helm release đang deployed trong cluster: $HELM_RELEASES"
+check "P6: Helm là phương thức deploy CHÍNH cho namespace babymilk (5 chart: babymilk-infra + 4 service, mỗi chart cài/nâng cấp độc lập)" $([ "$HELM_RELEASES" -ge 5 ] && echo 0 || echo 1)
+
+yellow "  📌 P2 (rolling update), P3 (blue/green): đã test thật, có transcript đầy đủ — xem"
+yellow "     lab/lab_2.1.txt, lab/lab_2.2.txt. Không test live ở đây vì có thay đổi tạm thời trên"
+yellow "     Deployment thật (dù luôn tự revert) — không phù hợp chạy trong lúc đang demo cho người khác xem."
 
 # ============================================================================
 section "§4.3 Environment, Configuration & Security — C1-C6"

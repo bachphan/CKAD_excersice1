@@ -1,11 +1,58 @@
 # CKAD Capstone Checklist — BabyMilk Shop
 
-Đối chiếu từng mục **Required** trong đề bài của thầy (`§4` Mandatory CKAD Requirements) với
-resource/file thật trong repo này + cách tự verify trên cluster thật. Không có mục nào chỉ "nói
+Đối chiếu từng mục trong đề bài thật của thầy (`capstone-requirements.md` — QNET CKAD Intensive)
+với resource/file thật trong repo này + cách tự verify trên cluster thật. Không có mục nào chỉ "nói
 suông" — mọi dòng dưới đây đều trỏ tới đúng file hoặc lệnh `kubectl` có thể chạy thật để kiểm chứng.
 
-> Muốn verify TỰ ĐỘNG cả bảng này cùng lúc: chạy `scripts/smoke-test.sh` (xem README mục "Chạy demo
+> Muốn verify TỰ ĐỘNG cả bảng §4 cùng lúc: chạy `scripts/smoke-test.sh` (xem README mục "Chạy demo
 > nhanh cho người chấm bài").
+
+## Tổng quan — đã làm được gì, áp dụng được gì
+
+**Kết luận**: đạt đủ **100% mục Required** trong §4 (30/30 mục, trừ O3 chỉ Recommended) — không
+dính bất kỳ điều kiện fail tự động nào ở §7 — vượt yêu cầu tối thiểu (≥70/100 + đủ Required).
+
+| Domain (theo §7 rubric — điểm thật để chấm) | Điểm | Trạng thái | Kỹ năng CKAD đã áp dụng thật |
+|---|---|---|---|
+| §3 Microservices design | 15 | ✅ Đủ | Service boundary rõ ràng, DNS discovery, HTTP contract, sidecar/init pattern có tài liệu — xem [§3 bên dưới](#3-microservices-standards--15-điểm) |
+| §4.1 Design & Build | 20 | ✅ Đủ | Custom image, Deployment/CronJob, multi-container (init+sidecar+ambassador), emptyDir, PVC, label |
+| §4.2 Deployment | 20 | ✅ Đủ | Rolling update, blue/green, HPA, Kustomize, **Helm (5 chart độc lập, chính thức)** |
+| §4.3 Config & Security | 20 | ✅ Đủ | ConfigMap, Secret, SecurityContext non-root/read-only-fs, RBAC least-privilege, ResourceQuota+LimitRange |
+| §4.4 Networking | 15 | ✅ Đủ | ClusterIP, Ingress 2-path, NetworkPolicy L3/L4+L7 (CiliumNetworkPolicy) |
+| §4.5 Observability + docs/demo | 10 | ✅ Đủ (O3 Recommended chưa làm) | Liveness/readiness probe, README debug runbook, API hiện hành |
+| **Tổng** | **100** | | |
+
+**2 điểm khác biệt cấu hình cần xác nhận lại với thầy** (không phải thiếu sót, chỉ khác so với đề
+bài mẫu — xem chi tiết cuối file): Kubernetes version (`v1.31.14` thay vì `v1.35.x`), namespace tự
+đặt tên `babymilk` (đề bài ghi "do thầy assign").
+
+---
+
+## §3 — Microservices standards (15 điểm, `§3` trong đề bài)
+
+| Mục | Yêu cầu | Trạng thái | Bằng chứng |
+|---|---|---|---|
+| 3.1 Single responsibility | Mỗi service 1 bounded context | ✅ | `product-service` (catalog/tồn kho), `user-service` (auth/hồ sơ), `order-service` (checkout/đơn hàng), `frontend` (gateway/UI) — không service nào lẫn trách nhiệm. |
+| 3.1 Independent deployability | Update 1 service không cần rebuild service khác | ✅ (vượt — chứng minh thật) | Mỗi service **1 chart Helm riêng** (`k8s/helm/{product,user,order}-service/`, `frontend/`), cài/nâng cấp độc lập. Đã verify thật: `helm upgrade product-service-live` — 4 pod còn lại (frontend/order/postgres/user) giữ nguyên y hệt `creationTimestamp`, không bị đụng. |
+| 3.1 Own data | Ưu tiên schema-per-service, hoặc giải thích lý do dùng chung | ✅ (giải thích rõ) | 1 instance Postgres, **3 database logic tách biệt hoàn toàn** (`babymilk_products`/`_users`/`_orders`, không JOIN chéo, mỗi service chỉ có credential/kết nối tới đúng 1 DB của mình). Dùng chung 1 instance (không phải 3 instance riêng) vì ngân sách tài nguyên thật của cluster (~1.9 CPU/3.2GB, 1 node worker) — đã ghi rõ lý do, không phải thiếu hiểu biết. |
+| 3.1 Sync vs async | Document cách service giao tiếp | ✅ | Toàn bộ giao tiếp là **HTTP đồng bộ** (không dùng message bus) — `order-service` gọi `product-service` qua `PRODUCT_SERVICE_URL` (`/internal/checkout`, `/internal/restock`, có `PRODUCT_SERVICE_TIMEOUT_MS`), `frontend` gọi cả 3 backend qua gateway pattern. Lựa chọn phù hợp quy mô: checkout cần phản hồi đồng bộ ngay (trừ kho + trả kết quả cho user), không có tác vụ nào thực sự cần async/queue. |
+| 3.1 Không "distributed monolith" | Multi-container phải có tài liệu, không nhồi nhét | ✅ | Pattern init+sidecar+ambassador áp dụng đồng bộ, có tài liệu đầy đủ ở `k8s/CONVENTIONS.md` mục 3 — không có Deployment nào nhồi nhiều process không liên quan vào 1 container. |
+| 3.2 Health endpoint | ≥1 health path mỗi service cho probe | ✅ | `GET /healthz` trên cả 4 service, dùng cho `readinessProbe`+`livenessProbe`. |
+| 3.2 Stable port | Document port, Service đúng `port`/`targetPort` | ✅ | Bảng port cố định ở README mục 2 và `k8s/CONVENTIONS.md` mục 3 (4000-4003 công khai, +100 nội bộ). |
+| 3.2 Versioning | Tag rõ ràng, không `:latest` | ✅ | `product-service:2.3`, `user-service:2.1`, `order-service:2.1`, `frontend:1.2`. |
+| 3.2 Config externalized | Không hardcode secret/config trong image | ✅ | 100% qua `ConfigMap`/`Secret` (`configMapKeyRef`/`secretKeyRef`), không biến nào hardcode trong Dockerfile/code. |
+| 3.3 Dockerfile per service | Build được, multi-stage | ✅ | `services/*/Dockerfile`, multi-stage `node:22-alpine`, ~58MB/image. |
+| 3.3 Non-root runtime | Khớp SecurityContext §4.3 | ✅ | Xem C3 bên dưới. |
+| 3.3 Resource awareness | Mọi container có requests+limits | ✅ | Xem C6 bên dưới — enforce cứng bởi ResourceQuota. |
+| 3.3 Stateless by default | Persistence qua PVC/DB, không local disk | ✅ | 4 app service hoàn toàn stateless (không ghi local disk); Postgres duy nhất có state, qua PVC. |
+| 3.4 ClusterIP east-west | Backend dùng ClusterIP | ✅ | Xem N1 bên dưới. |
+| 3.4 DNS discovery | Client dùng K8s DNS | ✅ | `PRODUCT_SERVICE_URL=http://product-service:4001` — DNS ngắn trong cùng namespace, không hardcode IP. |
+| 3.4 Ingress north-south | External HTTP qua Ingress | ✅ | Xem N3 bên dưới. |
+| 3.4 Network isolation | NetworkPolicy giới hạn Pod nào gọi backend nào | ✅ | Xem N4 bên dưới — vượt yêu cầu (cả L3/L4 lẫn L7). |
+| 3.4 Labels & selectors | `app`/`tier`/`version` nhất quán | ✅ | Xem D6 bên dưới. |
+| 3.5 Structured logs | Log ra stdout/stderr, sidecar có thể ship | ✅ | 100% log qua stdout (12-Factor #11), sidecar `log-shipper` tail lại — không đổi cách app ghi log. |
+| 3.5 Probes | Liveness+readiness mọi Deployment | ✅ | Xem O1/O2 bên dưới. |
+| 3.5 Debuggability | Người khác chẩn đoán được chỉ bằng `logs`/`describe`/`events`/`top` | ✅ | README mục "Debug runbook" — đã tự luyện qua `lab/lab_5.2.txt`. |
 
 ---
 
@@ -28,8 +75,8 @@ suông" — mọi dòng dưới đây đều trỏ tới đúng file hoặc lệ
 | P2 | Quy trình rolling update có tài liệu | ✅ | `lab/lab_2.1.txt` + `lab/class-demo/Day2-ApplicationDeployment.md` Lab 2.1 — `kubectl set image` + `kubectl rollout status`, đã test thật 2 chiều + rollback. |
 | P3 | 1 chiến lược nâng cao: blue/green **hoặc** canary | ✅ (blue/green) | `lab/lab_2.2.txt` — 2 Deployment `frontend`/`frontend-green` song song, chuyển traffic tức thì qua `Service.spec.selector`. |
 | P4 | HPA trên ≥1 Deployment (CPU target, có metrics-server) | ✅ | `product-service-hpa` (`k8s/base/40-hpa.yaml`, min1/max3/target50%). Verify: `kubectl get hpa -n babymilk`. |
-| P5 | Kustomize: `base/` + ≥1 overlay patch image/replicas | ✅ | `k8s/base/` + `k8s/overlays/{prod,dev}`. `prod` = cấu hình chạy thật (`kubectl diff -k` = 0), `dev` patch namespace/NodePort/HPA (chưa apply — thiếu tài nguyên chạy song song, đã validate render đúng). |
-| P6 | Helm chart cài được, có value override, upgrade+rollback | ✅ | `k8s/helm/babymilk-shop/`. Verify thật: `helm install`/`helm upgrade --set hpa.maxReplicas=5`/`helm rollback` — cả 3 đã test trên cluster (namespace riêng `babymilk-helm`, không đụng prod). |
+| P5 | Kustomize: `base/` + ≥1 overlay patch image/replicas | ✅ | `k8s/base/` + `k8s/overlays/{prod,dev}` — giữ nguyên trong repo, render sạch (`kubectl kustomize overlays/prod`). `dev` patch namespace/NodePort/HPA (chưa apply — thiếu tài nguyên chạy song song, đã validate render đúng). **Lưu ý**: kể từ khi chuyển namespace `babymilk` sang Helm quản lý (xem P6), `kubectl diff -k overlays/prod` KHÔNG còn = 0 nữa (đúng như dự kiến — 2 cách deploy khác nhau, không cùng quản lý 1 resource) — Kustomize chỉ còn giữ vai trò đáp ứng yêu cầu đề bài, không phải cách deploy live. |
+| P6 | Helm chart cài được, có value override, upgrade+rollback | ✅ (chính thức — thay Kustomize làm cách deploy live) | `k8s/helm/` — **5 chart độc lập**: `babymilk-infra` (namespace/config/secret/postgres/PV-PVC/NetworkPolicy/Ingress/CronJob) + `product-service`/`user-service`/`order-service`/`frontend` (mỗi chart 1 Deployment+Service riêng, cài/nâng cấp độc lập không đụng service khác). Đã cutover thật namespace `babymilk` từ Kustomize sang Helm (PVC mới rebind đúng static PV cũ, giữ nguyên toàn bộ data Postgres). Verify: `helm list -A`, `helm install`/`helm upgrade --set hpa.maxReplicas=5`/`helm rollback` — đã test cả 3 trên namespace cô lập trước khi cutover, và test upgrade độc lập từng chart (`helm upgrade product-service-live` không làm restart pod của 4 service/chart còn lại). |
 
 ## §4.3 — Application Environment, Configuration & Security (25% weight / 20 điểm rubric)
 

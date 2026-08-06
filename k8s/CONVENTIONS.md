@@ -14,8 +14,12 @@
 1. **Cluster thật là nguồn sự thật thứ 2** (git là nguồn sự thật thứ 1) — trước khi coi bất kỳ
    thay đổi nào là "xong", phải verify bằng lệnh thật trên cluster (`kubectl get/describe/logs`,
    `curl` qua NodePort), KHÔNG được giả định/suy đoán kết quả.
-2. **`kubectl diff -k overlays/prod` phải luôn = 0 dòng** sau mỗi lần thay đổi permanent — nghĩa là
-   file trong git khớp tuyệt đối với cluster đang chạy. Nếu > 0, phải hiểu rõ tại sao trước khi apply.
+2. **Helm là cách deploy CHÍNH THỨC cho namespace `babymilk` (prod thật)** kể từ khi cutover
+   (xem mục 9) — sau mỗi lần thay đổi permanent, phải verify bằng `helm list -A` (release đúng
+   `deployed`) + `helm diff`/`helm template` so với giá trị đang dùng nếu cần đối chiếu. Kustomize
+   (`k8s/overlays/prod`) vẫn giữ trong repo để đáp ứng yêu cầu đề bài (P5) nhưng **KHÔNG còn phản
+   ánh cluster thật** — `kubectl diff -k overlays/prod` sẽ KHÔNG = 0 nữa, đây là điều BÌNH THƯỜNG,
+   không phải drift cần fix.
 3. **Không phá app thật đang chạy** — mọi demo/lab dùng resource TẠM (namespace `default`, hoặc
    label `created-by=ckad-lab` để dọn gọn) trừ khi mục đích rõ ràng là thay đổi permanent cho
    `babymilk` (namespace prod thật). Sau demo luôn verify lại `babymilk` 5/5 pod Ready.
@@ -24,15 +28,17 @@
    `imagePullPolicy: IfNotPresent`, pull thật từ Docker Hub (worker có internet, xem mục 7).
 5. **Namespace `babymilk` chỉ có 1 node worker phục vụ** (`k8s-worker1`, ~1.9 CPU/3.2GB khả dụng vì
    master bị taint `NoSchedule`) — MỌI thay đổi tăng resource requests/limits phải tính lại
-   `ResourceQuota` (`k8s/base/70-resourcequota.yaml`), không được chặn nhầm pod đang chạy.
+   `ResourceQuota` (chart `babymilk-infra`, `k8s/helm/babymilk-infra/templates/resourcequota.yaml`),
+   không được chặn nhầm pod đang chạy.
 
 ---
 
-## 2. Cấu trúc thư mục & cách deploy (Kustomize là CHÍNH THỨC, Helm là SONG SONG)
+## 2. Cấu trúc thư mục & cách deploy (Helm là CHÍNH THỨC, Kustomize giữ để đáp ứng đề bài)
 
 ```
 k8s/
-├── base/                         # manifest gốc — sửa TẠI ĐÂY khi đổi vĩnh viễn
+├── base/                         # manifest gốc Kustomize — VẪN giữ, đáp ứng yêu cầu P5, KHÔNG
+│   │                              # còn là nguồn deploy live (xem mục 9b cũ / mục 9 mới)
 │   ├── kustomization.yaml        # liệt kê đủ mọi file .yaml trong base/ (trừ 02-secret.yaml)
 │   ├── 00-namespace.yaml
 │   ├── 01-configmap.yaml
@@ -43,38 +49,52 @@ k8s/
 │   ├── 30-pv-pvc.yaml
 │   ├── 40-hpa.yaml
 │   ├── 50-postgres.yaml
-│   ├── 60-stock-monitor.yaml     # CronJob
-│   └── 70-resourcequota.yaml
+│   ├── 60/61-stock-monitor*.yaml # CronJob + RBAC
+│   ├── 70-resourcequota.yaml
+│   ├── 71-limitrange.yaml
+│   └── 80-ingress.yaml
 ├── overlays/
-│   ├── prod/kustomization.yaml   # resources: [../../base], KHÔNG patch gì — đúng = cluster thật
+│   ├── prod/kustomization.yaml   # resources: [../../base], KHÔNG patch gì
 │   └── dev/kustomization.yaml    # namespace/NodePort/HPA riêng — CHƯA apply lên cluster
 │       # (không đủ tài nguyên chạy 2 bộ song song, chỉ dùng để validate render)
-└── helm/babymilk-shop/           # bản Helm SONG SONG, KHÔNG thay thế Kustomize — xem mục 9
+└── helm/                         # 5 chart Helm ĐỘC LẬP — cách deploy CHÍNH THỨC, xem mục 9
+    ├── babymilk-infra/           # namespace/config/secret/postgres/PVC/quota/networkpolicy/ingress/cronjob
+    ├── product-service/          # cài/nâng cấp độc lập, không đụng 3 chart service còn lại
+    ├── user-service/
+    ├── order-service/
+    └── frontend/
 ```
 
 **Quy tắc đặt tên file trong `base/`**: số 2 chữ số ở đầu = thứ tự nên đọc/apply (namespace trước,
 config trước app, app trước network policy phụ thuộc label...). Khi thêm file mới, chọn số phù hợp
 dải: `0x` = namespace/config, `1x` = app Deployment/Service, `2x` = NetworkPolicy, `3x` = storage,
 `4x` = autoscaling, `5x` = database, `6x` = Job/CronJob, `7x` = quota. Nhớ thêm vào `kustomization.yaml`.
+Kustomize không còn được apply lên `babymilk` live nữa, nhưng vẫn PHẢI giữ đồng bộ về mặt cấu trúc
+(feature parity) với 5 chart Helm — thêm feature mới vào cả 2 nơi để P5 (Kustomize) không bị lạc hậu.
 
-**Deploy thay đổi permanent — LUÔN theo đúng thứ tự này:**
+**Deploy thay đổi permanent — LUÔN theo đúng thứ tự này (Helm, cách deploy live):**
 ```bash
-# 1. Sửa file trong k8s/base/ tại máy dev (Windows)
-# 2. scp file đã sửa lên master (namespace/deploy KHÔNG phải git repo trên master, chỉ là bản copy)
-scp k8s/base/<file>.yaml master:/home/bachpt1/babymilk-k8s/base/
+# 1. Sửa template/values trong k8s/helm/<chart>/ tại máy dev (Windows)
+# 2. scp chart đã sửa lên master (namespace/deploy KHÔNG phải git repo trên master, chỉ là bản copy)
+scp -r k8s/helm/<chart> master:~/helm-v2/
 
-# 3. Áp dụng qua overlay prod (KHÔNG BAO GIỜ apply -f trực tiếp từng file rời — luôn qua -k)
-ssh master "cd ~/babymilk-k8s && kubectl apply -k overlays/prod"
+# 3. helm lint trước khi upgrade
+ssh master "helm lint ~/helm-v2/<chart>"
 
-# 4. Verify rollout + 0 drift
+# 4. Upgrade ĐÚNG chart bị đổi (không đụng 4 chart còn lại) — namespace=babymilk cho live
+ssh master "helm upgrade <release>-live ~/helm-v2/<chart> --set namespace=babymilk --reuse-values"
+
+# 5. Verify rollout thật (không suy đoán)
 ssh master "kubectl rollout status deployment/<tên> -n babymilk --timeout=90s"
-ssh master "cd ~/babymilk-k8s && kubectl diff -k overlays/prod"   # PHẢI ra rỗng
+ssh master "kubectl get pods -n babymilk"           # đúng số container Ready
+ssh master "curl -s http://localhost:30080/healthz"  # end-to-end qua NodePort
 
-# 5. Verify thật qua NodePort (không suy đoán)
-ssh master "curl -s http://localhost:30080/healthz"
-
-# 6. Commit + push k8s/base thật (trong repo git ở máy dev, KHÔNG phải bản copy trên master)
+# 6. Commit + push k8s/helm/<chart> thật (trong repo git ở máy dev, KHÔNG phải bản copy trên master)
 ```
+
+Nếu thay đổi cũng áp dụng được cho Kustomize (feature parity, xem trên) — cập nhật thêm `k8s/base/`
+tương ứng, `scp` lên `~/babymilk-k8s/base/` trên master, `kubectl kustomize overlays/prod` để
+validate render sạch (KHÔNG `apply` — Kustomize không còn quản lý `babymilk` live).
 
 ---
 
@@ -236,22 +256,44 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
 
 ---
 
-## 9. Helm chart (`k8s/helm/babymilk-shop/`) — quy tắc khi sửa
+## 9. Helm chart (`k8s/helm/*`) — cách deploy CHÍNH THỨC cho `babymilk` prod thật
 
-- Chart này **mirror `k8s/base`**, kể cả pattern 4-container ở mục 3 — **sửa `k8s/base` xong PHẢI
-  đồng bộ sang `k8s/helm/babymilk-shop/templates/` tương ứng** (không để 2 nơi lệch nhau).
-- Namespace mặc định `babymilk-helm` — KHÁC `babymilk` (namespace prod thật do Kustomize quản lý) —
-  **không đổi giá trị mặc định này** để tránh 2 cách deploy đụng độ resource khi chạy song song.
-- PVC dùng `storageClassName: local-path` (dynamic) — KHÔNG dùng static PV `postgres-data-pv`
-  (đang bị Kustomize giữ) để tránh xung đột binding.
-- Trước khi sửa gì: `helm lint k8s/helm/babymilk-shop` phải sạch. Trước khi coi là xong: thật sự
-  `helm install`/`helm upgrade`/`helm rollback` trên cluster (namespace demo riêng), verify pod
-  Ready + curl qua NodePort riêng (`frontend.nodePort` trong `values.yaml`, mặc định `30081` — xem
-  lưu ý trùng port với lab demo ở mục 10), rồi `helm uninstall` + xoá namespace để giải phóng tài
-  nguyên node worker (cluster chỉ có 1 node, không được để namespace demo tồn tại dài hạn).
-- **Kustomize vẫn là cách deploy CHÍNH THỨC cho `babymilk` prod thật** — Helm KHÔNG thay thế, chỉ
-  thêm vào để luyện tập/demo vòng đời Helm. Nếu sau này quyết định đổi hẳn sang Helm làm chính thức,
-  đó là thay đổi lớn cần bàn riêng, không tự ý làm.
+5 chart độc lập, cài/nâng cấp/rollback riêng lẻ, KHÔNG dùng Helm chart dependency/library chart —
+mỗi service chart tham chiếu ConfigMap/Secret/ambassador-conf của `babymilk-infra` bằng TÊN CỐ ĐỊNH
+(`babymilk-config`, `babymilk-secret`, `ambassador-nginx-conf`), không phải bằng Helm dependency:
+
+| Chart | Release live | Quản lý |
+|---|---|---|
+| `k8s/helm/babymilk-infra/` | `babymilk-infra` | Namespace, ConfigMap, Secret (tuỳ chọn), Postgres+PVC/PV, ResourceQuota+LimitRange, NetworkPolicy (L3/L4+L7), Ingress, CronJob+RBAC |
+| `k8s/helm/product-service/` | `product-service-live` | Deployment 4-container + Service + HPA |
+| `k8s/helm/user-service/` | `user-service-live` | Deployment 4-container + Service |
+| `k8s/helm/order-service/` | `order-service-live` | Deployment 4-container + Service |
+| `k8s/helm/frontend/` | `frontend-live` | Deployment 4-container + Service NodePort |
+
+**Thứ tự bắt buộc**: `babymilk-infra` PHẢI cài trước 4 chart service (chúng tham chiếu ConfigMap/
+Secret do `babymilk-infra` tạo). Release metadata Helm nằm ở namespace `default` (namespace hiện
+tại của context `kubectl`/`helm` trên master) — **khác** với `--set namespace=babymilk` (namespace
+chứa resource K8s thật) — 2 khái niệm độc lập, đừng nhầm.
+
+- Mọi chart **mirror `k8s/base`** về mặt tính năng (pattern 4-container ở mục 3, SecurityContext ở
+  mục 4, resources ở mục 5...) — sửa 1 bên PHẢI đồng bộ sang bên kia (xem mục 2 "feature parity").
+- `babymilk-infra/values.yaml`: `secrets.manage` — mặc định `true` (chart tự tạo Secret từ giá trị
+  trong `values.yaml`). Đặt `false` khi Secret đã tồn tại sẵn trong namespace và muốn GIỮ NGUYÊN giá
+  trị cũ (không ghi đè) — dùng đúng 1 lần lúc cutover từ Kustomize sang Helm, xem `work_done.md`.
+- `postgres.volumeName` + `postgres.createStaticPV`: mặc định rỗng/`false` → PVC dùng dynamic
+  provisioning (`storageClassName: local-path`), namespace demo/test bất kỳ. Muốn bind vào ĐÚNG
+  static PV có sẵn (namespace `babymilk` thật, PV `postgres-data-pv`, `persistentVolumeReclaimPolicy:
+  Retain`): `--set postgres.volumeName=postgres-data-pv --set postgres.createStaticPV=false` — PV
+  phải ở trạng thái `Available` (claimRef đã clear) trước khi `helm install`.
+- Trước khi sửa gì: `helm lint k8s/helm/<chart>` phải sạch. Trước khi coi là xong: `helm upgrade`
+  chart đã sửa trên cluster thật, verify `kubectl get pods -n babymilk` (5/5 Ready) + `curl` qua
+  NodePort/Ingress thật — **không suy đoán**.
+- Test tính năng MỚI (không phải sửa nhỏ) → LUÔN thử trước trên namespace cô lập (vd
+  `babymilk-helmtest`, `ingress.host` riêng để tránh đụng admission webhook host+path duy nhất của
+  `ingress-nginx`) rồi mới `helm upgrade` vào `babymilk` thật. Nhớ `helm uninstall` + xoá namespace
+  test sau khi xong, không để tồn tại dài hạn (cluster chỉ có 1 node worker).
+- **Kustomize (`k8s/base` + `k8s/overlays`) vẫn giữ trong repo, render sạch, để đáp ứng yêu cầu đề
+  bài P5** — nhưng KHÔNG còn là cách deploy `babymilk` live, không `apply -k` lên cluster thật nữa.
 
 ## 9b. Ingress — TUYỆT ĐỐI KHÔNG dùng Cilium's built-in Ingress Controller
 
@@ -262,9 +304,10 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
 - **Dùng `ingress-nginx`** thay thế — Ingress Controller độc lập, không gắn vào CNI agent, đã cài
   thành công (`controller-v1.15.1`, bản `baremetal`, NodePort `80:30369`/`443:31810`).
   Coi là **cluster add-on cài riêng** (giống `metrics-server`/`local-path-provisioner`) —
-  **KHÔNG đưa manifest 668 dòng của ingress-nginx vào Kustomize repo**, chỉ document lệnh cài trong
-  README. Ngược lại, `Ingress` resource CỦA APP (`k8s/base/80-ingress.yaml`, route `babymilk.local`)
-  PHẢI qua Kustomize như mọi resource khác của app.
+  **KHÔNG đưa manifest 668 dòng của ingress-nginx vào Kustomize/Helm repo**, chỉ document lệnh cài
+  trong README. Ngược lại, `Ingress` resource CỦA APP (route `babymilk.local`) PHẢI qua chart
+  `babymilk-infra` (`templates/ingress.yaml`) như mọi resource khác của app — `k8s/base/80-ingress.yaml`
+  vẫn giữ song song cho Kustomize (P5).
 - Nếu sau này Cilium ra version mới có thể đã fix bug này — vẫn KHÔNG tự ý thử lại
   `ingressController.enabled=true` trên cluster đang chạy app thật mà không hỏi trước, vì lịch sử
   2/2 lần thất bại giống hệt nhau.
@@ -273,17 +316,21 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
 
 ## 10. Trước khi coi 1 thay đổi K8s là "xong" — checklist bắt buộc
 
-1. `kubectl apply -k overlays/prod` (hoặc `helm upgrade` nếu sửa chart Helm) chạy không lỗi.
+1. `helm upgrade <release>-live k8s/helm/<chart> --set namespace=babymilk --reuse-values` chạy
+   không lỗi (chỉ upgrade ĐÚNG chart bị đổi).
 2. `kubectl rollout status deployment/<tên> -n babymilk --timeout=90s` → thành công.
 3. `kubectl get pods -n babymilk` → đúng số container Ready (vd `3/3` cho 4 Deployment app, `1/1`
-   cho postgres) — KHÔNG chỉ nhìn `Running`, phải nhìn tỉ lệ Ready/Total.
+   cho postgres) — KHÔNG chỉ nhìn `Running`, phải nhìn tỉ lệ Ready/Total. Xác nhận 4 chart/release
+   KHÔNG bị đổi không có timestamp/restart count mới (chứng minh upgrade độc lập thật sự).
 4. `kubectl logs <pod> -c <container>` cho TỪNG container mới thêm/sửa — xác nhận không có lỗi.
 5. `curl` qua NodePort thật (`http://192.168.56.102:30080/...`) — xác nhận luồng end-to-end, không
    chỉ test nội bộ pod.
-6. `kubectl diff -k overlays/prod` → 0 dòng (không còn drift giữa git và cluster).
+6. `helm list -A` → release đổi phải ở `deployed`, `REVISION` tăng đúng 1.
 7. Nếu đổi resource requests/limits → `kubectl describe resourcequota babymilk-quota -n babymilk`
    xác nhận chưa chạm trần.
-8. Cập nhật `README.md` (mục checklist/trạng thái liên quan) và `../work_done.md` (mục mới, theo
+8. Nếu thay đổi cũng áp dụng được cho Kustomize (feature parity, xem mục 2) → cập nhật `k8s/base/`
+   tương ứng, verify `kubectl kustomize overlays/prod` render sạch (không lỗi, KHÔNG `apply`).
+9. Cập nhật `README.md` (mục checklist/trạng thái liên quan) và `../work_done.md` (mục mới, theo
    đúng format các mục trước — có **Vì sao** và bug/fix thật gặp phải nếu có).
 9. Nếu có NodePort mới cho mục đích lab/demo — theo quy ước đã thiết lập: **luôn thêm NodePort** để
    xem được từ browser Windows qua mạng host-only (`192.168.56.x`), tránh trùng với NodePort đang
