@@ -1,35 +1,74 @@
-# 🍼 BabyMilk Shop — E-commerce sữa bột cho bé (demo học tập CKAD)
+# 🍼 BabyMilk Shop — Capstone Project CKAD
 
-Ứng dụng web bán sữa bột chia thành **4 microservice độc lập + PostgreSQL**, container hóa và **đang chạy thật trên cụm Kubernetes tự dựng bằng kubeadm trên VirtualBox** (không phải cloud, không phải minikube) — kèm đầy đủ NetworkPolicy (L3/L4 + L7), PersistentVolume, và HorizontalPodAutoscaler.
+E-commerce bán sữa bột công thức cho trẻ em, kiến trúc **4 microservice độc lập + PostgreSQL**,
+container hóa và **đang chạy thật trên cụm Kubernetes 2 node tự dựng bằng kubeadm trên VirtualBox**
+(không phải cloud, không phải minikube/kind) — không thiếu bất kỳ mục "Required" nào trong đề bài
+Capstone CKAD.
 
-> 📐 Sửa/thêm manifest K8s? Đọc [`k8s/CONVENTIONS.md`](k8s/CONVENTIONS.md) trước — quy chuẩn bắt buộc
-> (SecurityContext, resources, port, pattern 4-container, checklist verify...) để mọi thay đổi sau
-> này (kể cả do AI khác làm) vẫn nhất quán với phần đã có.
+> 📐 **Sửa/thêm manifest K8s?** Đọc [`k8s/CONVENTIONS.md`](k8s/CONVENTIONS.md) trước — quy chuẩn bắt
+> buộc để mọi thay đổi sau này (kể cả do AI khác làm) vẫn nhất quán với phần đã có.
+>
+> ✅ **Đối chiếu từng yêu cầu Capstone**: xem [`docs/ckad-checklist.md`](docs/ckad-checklist.md) —
+> map từng mục D1-O5 trong đề bài tới đúng file/lệnh verify thật.
+>
+> 🖼️ **Sơ đồ kiến trúc (Mermaid)**: xem [`docs/architecture.md`](docs/architecture.md).
+>
+> ⚡ **Chấm bài nhanh**: chạy `scripts/smoke-test.sh` — SSH vào cluster, in bằng chứng đạt đủ yêu
+> cầu, mở web thật. Xem mục ["Chạy demo nhanh cho người chấm bài"](#-chạy-demo-nhanh-cho-người-chấm-bài) bên dưới.
 
-## ✅ Trạng thái hiện tại: ĐANG CHẠY TRÊN K8S — NetworkPolicy + PVC + HPA + PostgreSQL + CronJob + Kustomize + Helm + Ingress
+---
+
+## 1. Tổng quan & User story
+
+**Bài toán**: cha mẹ cần mua sữa công thức đúng độ tuổi cho con, dễ dàng lọc theo thương hiệu/giá/độ
+tuổi, đặt hàng nhanh, admin quản lý được tồn kho và đơn hàng.
+
+**User story chính**:
+1. Khách vào trang chủ, lọc sữa theo độ tuổi/thương hiệu/khoảng giá → xem chi tiết sản phẩm.
+2. Khách đăng ký/đăng nhập → thêm sản phẩm vào giỏ (lưu tạm ở trình duyệt) → checkout.
+3. Hệ thống trừ kho **nguyên tử** (không bán vượt tồn kho dù nhiều người đặt cùng lúc), trả lại đơn
+   hàng với giá/tên đã "chụp ảnh" tại thời điểm đặt (không tin giá client gửi lên).
+4. Admin xem/sửa sản phẩm, đổi trạng thái đơn hàng; hệ thống tự động cảnh báo (CronJob) khi sản phẩm
+   nào tồn kho thấp.
+
+## 2. Danh sách microservice
+
+| Service | Port | Trách nhiệm (bounded context) | Database |
+|---|---|---|---|
+| **frontend** | 4000 | Static SPA (vanilla JS) + API gateway — điểm vào DUY NHẤT của browser | — |
+| **product-service** | 4001 | Catalog, tồn kho, trừ/hoàn kho nguyên tử (`/internal/*`) | `babymilk_products` |
+| **user-service** | 4002 | Đăng ký/đăng nhập, JWT, hồ sơ người dùng | `babymilk_users` |
+| **order-service** | 4003 | Checkout, lịch sử đơn hàng, đổi trạng thái | `babymilk_orders` |
+| *(hạ tầng)* postgres | 5432 | 1 instance Postgres 16, 3 database logic riêng biệt | — |
+| *(hạ tầng)* stock-monitor | — | CronJob, không có port — cảnh báo tồn kho thấp hàng ngày | — |
+
+4 service trên là **4 Deployment độc lập**, mỗi service có image Docker riêng, deploy/update riêng
+(không cần rebuild service khác). Chi tiết kiến trúc + sơ đồ Mermaid: [`docs/architecture.md`](docs/architecture.md).
+
+## 3. Trạng thái hiện tại — ĐANG CHẠY TRÊN K8S
 
 | | |
 |---|---|
-| Truy cập | `http://192.168.56.102:30080` (từ máy trong cùng mạng host-only với cluster) |
+| Truy cập | `http://192.168.56.102:30080` (NodePort, từ máy cùng mạng host-only với cluster) |
 | Namespace | `babymilk` |
-| Pods | 5/5 `Running` — 4 app pod **mỗi pod 3 container** (app + sidecar log-shipper + ambassador nginx, ngoài init container chạy trước) + 1 postgres, tất cả trên node `k8s-worker1` |
-| Database | PostgreSQL 16 (1 instance, 3 database logic: `babymilk_products/users/orders`) |
-| Deploy bằng | Kustomize (chính thức, prod) — `kubectl apply -k k8s/overlays/prod`; **Helm chart song song** (`k8s/helm/babymilk-shop/`) để demo install/upgrade/rollback trong namespace riêng, xem mục "Helm chart" bên dưới |
+| Pods | 5/5 `Running` — 4 app pod **mỗi pod 4 container** (init + app + sidecar log + ambassador nginx) + 1 postgres |
+| Database | PostgreSQL 16 (1 instance, 3 database logic riêng) |
+| Deploy bằng | **Kustomize** (chính thức, `kubectl apply -k k8s/overlays/prod`) + **Helm chart song song** (`k8s/helm/babymilk-shop/`, demo install/upgrade/rollback) |
 | Admin | `admin@babymilk.local` / `admin12345` |
-| Dữ liệu | 14 sản phẩm sữa mẫu, seed tự động, kèm ảnh minh hoạ theo brand (`/images/*.png`) |
+| Dữ liệu | 14 sản phẩm sữa mẫu (seed tự động), kèm ảnh minh hoạ theo brand |
 
 ```
 NAME                               READY   STATUS    RESTARTS   NODE
-frontend-f9c96cd57-x2465           3/3     Running   0          k8s-worker1
-order-service-558d5cf9fc-6rprf     3/3     Running   0          k8s-worker1
-postgres-65f4dddc66-zv676          1/1     Running   1          k8s-worker1
-product-service-785c598b74-p4dtw   3/3     Running   0          k8s-worker1
-user-service-57f98dc67-4qdq4       3/3     Running   0          k8s-worker1
+frontend-7d4c8dd454-fnlrk          3/3     Running   0          k8s-worker1
+order-service-558d5cf9fc-cp2kv     3/3     Running   0          k8s-worker1
+postgres-65f4dddc66-d2zhc          1/1     Running   0          k8s-worker1
+product-service-75fb55794c-hlnf2   3/3     Running   0          k8s-worker1
+user-service-57f98dc67-qftv2       3/3     Running   0          k8s-worker1
 ```
 
-### Checklist hạ tầng — đã hoàn thành
+### Checklist hạ tầng — đã hoàn thành (map đầy đủ với đề bài: [`docs/ckad-checklist.md`](docs/ckad-checklist.md))
 
-- [x] **NetworkPolicy** — mặc định deny toàn bộ ingress trong namespace, mở đúng luồng cần thiết. Riêng `product-service` dùng **CiliumNetworkPolicy (L7 HTTP-aware)**: `/internal/*` chỉ `order-service` gọi được, `frontend` + `stock-monitor` (CronJob) chỉ được gọi `/api/*` — đã verify thực tế bằng cách exec vào pod `frontend` gọi thẳng `/internal/checkout`, nhận về `403 Access denied` (chặn ở tầng Cilium Envoy proxy, không phải app tự check).
+- [x] **NetworkPolicy** — mặc định deny toàn bộ ingress trong namespace, mở đúng luồng cần thiết. Riêng `product-service` dùng **CiliumNetworkPolicy (L7 HTTP-aware)**: `/internal/*` chỉ `order-service` gọi được, `frontend`/`stock-monitor`/`ingress-nginx` chỉ được gọi `/api/*` — đã verify thực tế bằng cách exec vào pod `frontend` gọi thẳng `/internal/checkout`, nhận về `403 Access denied` (chặn ở tầng Cilium Envoy proxy, không phải app tự check).
 - [x] **PersistentVolumeClaim** — Postgres data mount qua PVC (hostPath static provisioning, `1Gi`), đã verify: xóa pod Postgres, tạo pod mới, order/product data vẫn còn nguyên.
 - [x] **HorizontalPodAutoscaler** — `product-service-hpa` (min 1 / max 3, target CPU **50%**), cần cài thêm `metrics-server` (chưa có sẵn trong cluster kubeadm, phải thêm flag `--kubelet-insecure-tls` vì kubelet dùng self-signed cert). Đã verify HPA đọc được metrics real-time; đã thử scale tay `product-service` lên 10 replicas để test (xem `lab/lab_2.3.txt`) — thành công, sau đó scale về lại 1 và để HPA quản lý.
 - [x] **PostgreSQL** — chuyển hoàn toàn 3 backend từ SQLite (`better-sqlite3`, đồng bộ) sang PostgreSQL (`pg`, bất đồng bộ), giữ nguyên toàn bộ business logic (transaction nguyên tử khi checkout dùng `SELECT ... FOR UPDATE` thay cho serialize của SQLite). Đã test đầy đủ: catalog, login, checkout đa sản phẩm, huỷ đơn hoàn kho, chặn mua vượt tồn kho — cả local (Docker Postgres) lẫn trên cluster thật.
@@ -39,67 +78,101 @@ user-service-57f98dc67-4qdq4       3/3     Running   0          k8s-worker1
 - [x] **Helm chart** (`k8s/helm/babymilk-shop/`) — bản deploy **song song, KHÔNG thay thế** Kustomize (Kustomize vẫn là cách quản lý chính thức cho `babymilk`/prod). Chart deploy đầy đủ 5 workload (kể cả pattern 4-container ở trên) vào namespace riêng `babymilk-helm`, PVC dùng `local-path` (dynamic, tách biệt hoàn toàn với static PV `postgres-data-pv` mà bản Kustomize đang giữ) — không đụng độ tài nguyên với namespace `babymilk` thật. Đã verify thật cả 3 thao tác: `helm install` (5/5 pod Running, test end-to-end qua NodePort riêng `30081`), `helm upgrade --set hpa.maxReplicas=5` (verify `kubectl get hpa` đổi đúng maxPods), `helm rollback babymilk-demo 1` (verify trả lại maxPods cũ). `helm lint` sạch, không cảnh báo lỗi.
 - [x] **Rolling update + Rollback** đã test thật trên `product-service` (v2.0→v2.1→giả lập bản lỗi→rollback), **Blue/Green** đã test thật trên `frontend` (banner xanh lá đổi qua Service selector, đã trả về nguyên trạng sau demo). Chi tiết: `lab/lab_2.1.txt`, `lab/lab_2.2.txt`.
 - [x] **SecurityContext** — cả 4 Deployment chạy `runAsNonRoot`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`. Verify: `touch` vào root filesystem bị chặn (`Read-only file system`), checkout đầy đủ luồng vẫn hoạt động 100%. Chi tiết: `lab/lab_3.2.txt`.
-- [x] **ResourceQuota** — `babymilk-quota` (sized theo usage thật + margin, không chặn nhầm pod đang chạy), verify bằng cách tạo pod xin vượt quota → bị từ chối đúng luật. Chi tiết: `lab/lab_3.4.txt`.
+- [x] **ResourceQuota + LimitRange** — `babymilk-quota` (sized theo usage thật + margin, không chặn nhầm pod đang chạy) + `babymilk-limits` (min/max áp dụng mọi container). Verify bằng cách tạo pod xin vượt quota → bị từ chối đúng luật. Chi tiết: `lab/lab_3.4.txt`.
+- [x] **RBAC permanent** — `stock-monitor-sa` + `Role` (chỉ `get`/`list` Pod trong namespace) + `RoleBinding`, gắn vào CronJob `stock-monitor` thật (không phải demo tạm bị xoá sau mỗi lần chạy `restore-to-baseline.sh`): 1 init container dùng SA này gọi K8s API kiểm tra `product-service` có Pod Running không trước khi gọi HTTP (fail-fast thật). Verify least-privilege bằng `kubectl auth can-i`.
 - [x] **NetworkPolicy Egress** — `default-deny-egress` + allow DNS + allow đúng luồng nội bộ; backend **không ra được internet** (verify: request treo tới timeout, không có response). Chi tiết: `lab/lab_4.3.txt`.
 - [x] **StorageClass động** — cài `local-path-provisioner`, verify dynamic provisioning + persistence thật (pod hoàn toàn khác, không ghi gì, vẫn đọc được data cũ). Chi tiết: `lab/lab_4.4.txt`.
-- [x] **Ingress** — thử bật Cilium's built-in Ingress Controller **2 lần**, cả 2 lần đều gặp y hệt 1 bug thật của Cilium 1.19.x khi restart agent cùng kube-proxy ([issue #44464](https://github.com/cilium/cilium/issues/44464)) → **rollback** cả 2 lần, không downtime app. Chuyển sang **`ingress-nginx`** (tách biệt hoàn toàn khỏi CNI agent) — cài thành công ngay lần đầu, `1/1 Running` trong 31s, Cilium hoàn toàn không bị đụng tới. `Ingress` thật (`k8s/base/80-ingress.yaml`, host `babymilk.local`) có **2 path route tới 2 Service khác nhau**: `/api/products` → thẳng `product-service` (bỏ qua frontend gateway, chỉ GET), `/` → `frontend` (catch-all). Verify đúng: cả 2 path trả data thật (200), Host sai trả `404`, `/internal/*` qua đường Ingress vẫn bị chặn (không route được, path scoping + CiliumNetworkPolicy L7). `kubectl diff -k` = 0. Chi tiết đầy đủ 2 lần thử Cilium + lần thành công với nginx: `lab/lab_4.2.txt`.
-- [x] **LimitRange** — `babymilk-limits` (`k8s/base/71-limitrange.yaml`) đi kèm ResourceQuota: `min`/`max` áp dụng cho MỌI container (kể cả container đã khai giá trị cụ thể), `default`/`defaultRequest` làm lưới an toàn cho container mới lỡ quên khai. Verify: apply không ảnh hưởng 5 pod đang chạy (LimitRange chỉ chặn lúc TẠO MỚI, không hồi tố).
-- [x] **RBAC permanent** (không phải demo tạm) — `stock-monitor-sa` + `Role` (chỉ `get`/`list` Pod trong namespace `babymilk`) + `RoleBinding` (`k8s/base/61-stock-monitor-rbac.yaml`), gắn vào CronJob `stock-monitor` thật: 1 init container mới `check-product-service-up` dùng SA này gọi K8s API kiểm tra `product-service` có Pod Running không trước khi gọi HTTP (fail-fast). Gặp đúng bài học cũ ở Lab 3.3: `default-deny-egress` chặn cả gọi K8s API dù RBAC đã cho phép — nhưng lần này **giải quyết triệt để** thay vì né tránh: `kube-apiserver` chạy `hostNetwork: true` nên NetworkPolicy chuẩn K8s với `podSelector` KHÔNG match được (đã thử, timeout thật), phải dùng `CiliumNetworkPolicy` với `toEntities: [kube-apiserver]` — entity đặc biệt của Cilium đúng cho case này. Verify least-privilege thật bằng `kubectl auth can-i`: `get pods` → yes, `delete pods`/`get secrets`/`get pods -n default` → no cả 3. Chạy tay Job từ CronJob, cả init container lẫn main container đều thành công.
-- [x] **12-Factor App** — soát lại theo [12factor.net](https://www.12factor.net/), đạt 11/12 (Config, Backing services, Build/release/run, Processes stateless, Port binding, Concurrency, Dev/prod parity, Logs, Admin processes đều đạt). Điểm thiếu duy nhất (**#9 Disposability** — graceful shutdown) đã fix: cả 4 service bắt `SIGTERM`/`SIGINT`, đóng HTTP server + connection pool trước khi thoát thay vì bị kill đột ngột. Verify thật bằng `kubectl delete pod` giữa lúc rolling update, thấy đúng log `SIGTERM received, shutting down gracefully...` → `server + db pool closed, exiting`.
-- [x] **Ảnh sản phẩm** — 7 ảnh PNG theo brand (`frontend/public/images/*.png`), migration `002_update_image_urls.sql` cập nhật `image_url` cho 14 sản phẩm đang có sẵn trong DB (chạy tự động qua `schema_migrations`, không cần thao tác tay). Bump `product-service:2.3`, `frontend:1.2`. Verify thật: log pod có `applied migration 002_update_image_urls.sql`, `curl /api/products` trả đúng `imageUrl`, `curl /images/nan.png` trả `HTTP 200, content-type: image/png`.
+- [x] **Ingress** — thử bật Cilium's built-in Ingress Controller **2 lần**, cả 2 lần đều gặp y hệt 1 bug thật của Cilium 1.19.x khi restart agent cùng kube-proxy ([issue #44464](https://github.com/cilium/cilium/issues/44464)) → **rollback** cả 2 lần, không downtime app. Chuyển sang **`ingress-nginx`** (tách biệt hoàn toàn khỏi CNI agent) — cài thành công ngay lần đầu. `Ingress` thật có **2 path route tới 2 Service khác nhau**: `/api/products` → thẳng `product-service`, `/` → `frontend`. Chi tiết đầy đủ: `lab/lab_4.2.txt`.
+- [x] **12-Factor App** — soát lại theo [12factor.net](https://www.12factor.net/), đạt 11/12 lúc đầu, đã fix nốt **#9 Disposability** (graceful shutdown `SIGTERM`/`SIGINT`) → **12/12**. Verify thật bằng `kubectl delete pod` giữa lúc rolling update, thấy đúng log `SIGTERM received, shutting down gracefully...` → `server + db pool closed, exiting`.
+- [x] **Ảnh sản phẩm** — 7 ảnh PNG theo brand, migration SQL tự chạy cập nhật `image_url` cho data sẵn có.
 
-## 🖥️ Môi trường hạ tầng (K8s cluster)
+---
 
-Cluster Kubernetes 2 node dựng bằng `kubeadm` trên 2 VM VirtualBox (không dùng cloud/minikube/kind):
+## 4. Chạy demo nhanh cho người chấm bài
 
-| | Node master | Node worker |
+**Cách 1 — 1 lệnh duy nhất, tự động hết** (khuyến nghị cho việc chấm bài):
+
+```bash
+bash scripts/smoke-test.sh
+```
+
+Script này (chạy từ máy có SSH access tới cluster — mặc định máy dev Windows của sinh viên):
+1. SSH vào node master, chạy **toàn bộ** kiểm tra tương ứng `docs/ckad-checklist.md` (Pod/Service/
+   NetworkPolicy/RBAC/Ingress/HPA/PVC...) với bằng chứng thật (không chỉ "resource tồn tại" mà còn
+   test hành vi: RBAC least-privilege, NetworkPolicy chặn đúng, Ingress route đúng theo path...).
+2. In bảng tổng kết PASS/FAIL theo từng domain CKAD (§4.1 → §4.5).
+3. `curl` trực tiếp vào app thật (cả đường NodePort lẫn Ingress), in ra response thật.
+4. Tự mở trình duyệt mặc định (Windows/Mac/Linux) vào URL app — xem được ngay giao diện thật.
+
+**Cách 2 — Xem từng lab đã làm chi tiết**: `lab/class-demo/` có sẵn 5 file `DayN-*.md` (theo đúng 5
+domain CKAD) copy-paste được, hoặc chạy `lab/class-demo/run-all-labs.sh` để chạy tự động cả 20 lab
+kèm giải thích domain CKAD (mất ~10-15 phút, có `restore-to-baseline.sh` tự động ở cuối).
+
+**Cách 3 — Đọc transcript đầy đủ**: `lab/lab_1.1.txt` → `lab/lab_5.4.txt` — log lệnh + output thật
+của cả 20 lab lúc làm thật lần đầu (bao gồm cả lỗi gặp phải và cách fix).
+
+---
+
+## 5. Debug runbook
+
+Khi nghi ngờ app có vấn đề, thứ tự chẩn đoán khuyến nghị (đã luyện qua `lab/lab_5.2.txt`):
+
+```bash
+# 1. Events trước tiên — timeline tổng quan toàn namespace
+kubectl get events -n babymilk --sort-by=.lastTimestamp | tail -20
+
+# 2. Describe — chi tiết 1 resource cụ thể (thấy rõ lý do Pending/CrashLoop/...)
+kubectl describe pod <tên-pod> -n babymilk
+
+# 3. Logs — log ứng dụng thật. Với pod nhiều container PHẢI chỉ định -c
+kubectl logs -n babymilk deploy/product-service                      # container đầu tiên (app chính)
+kubectl logs -n babymilk deploy/product-service -c log-shipper       # sidecar
+kubectl logs -n babymilk deploy/product-service -c ambassador-nginx  # ambassador
+kubectl logs -n babymilk <pod> --previous                            # log lần chạy TRƯỚC (nếu đã restart)
+
+# 4. top — tài nguyên real-time (cần metrics-server)
+kubectl top pods -n babymilk
+kubectl top nodes
+
+# 5. exec — vào thẳng container kiểm tra (vd network/DNS)
+kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:4101/healthz
+```
+
+## 6. Yêu cầu môi trường (Prerequisites)
+
+| Thành phần | Bắt buộc | Ghi chú |
 |---|---|---|
-| VM name (VirtualBox) | `k8s_mtr` | `worker_1` |
-| Hostname trong cluster | `bachpt1` | `k8s-worker1` |
-| Vai trò | control-plane (taint `NoSchedule` — không nhận app pod) | chạy toàn bộ app workload |
-| IP (host-only network) | `192.168.56.103` | `192.168.56.102` |
-| OS | Ubuntu Server 26.04 LTS | Ubuntu Server 26.04 LTS |
-| Kubernetes | v1.31.14 | v1.31.14 |
-| Container runtime | containerd 2.2.2 | containerd 2.2.2 |
-| CPU / RAM (allocatable) | 2 core / 3.3GB | 2 core / 3.3GB |
-| Disk | 23GB (đã extend LVM từ 12GB mặc định) | 23GB (đã extend LVM từ 12GB mặc định) |
+| Kubernetes | ✅ | `v1.31.14` (kubeadm tự dựng — xem mục 8 để biết cách dựng lại) |
+| CNI policy-capable | ✅ | Cilium v1.19.3 (NetworkPolicy L3/L4 + CiliumNetworkPolicy L7) |
+| Ingress Controller | ✅ | `ingress-nginx` v1.15.1 |
+| metrics-server | ✅ | Bắt buộc cho HPA, cài thêm (không có sẵn trong kubeadm) |
+| StorageClass mặc định | ✅ | `local-path` (Rancher `local-path-provisioner`) |
+| `kubectl` | ✅ | — |
+| `helm` v3 | ✅ | Cho `k8s/helm/babymilk-shop/` |
+| Docker | Chỉ khi cần build lại image | Docker Desktop trên máy dev |
+| Node.js ≥ 22 | Chỉ khi chạy local dev (không qua K8s) | — |
 
-- **CNI**: Cilium v1.19.3 (kèm Cilium Envoy DaemonSet) — thay cho Calico, dùng cho cả L3/L4 NetworkPolicy chuẩn K8s lẫn L7 HTTP-aware CiliumNetworkPolicy.
-- **metrics-server**: v0.8.1, cài thêm cho HPA (không có sẵn trong kubeadm), patch `--kubelet-insecure-tls` vì kubelet dùng cert tự ký.
-- **StorageClass**: `local-path` (Rancher `local-path-provisioner`) — dynamic provisioning thật, cài thêm vì cluster kubeadm không có sẵn.
-- **Ingress Controller**: `ingress-nginx` v1.15.1 (NodePort `80:30369`/`443:31810`) — cài đè lên sau khi Cilium's built-in Ingress Controller dính bug thật 2 lần (agent Cilium kẹt khi restart cùng kube-proxy trên Cilium 1.19.x — [issue #44464](https://github.com/cilium/cilium/issues/44464)). `ingress-nginx` chạy tách biệt hoàn toàn khỏi CNI agent nên không dính lại vấn đề đó. Cài bằng:
-  ```bash
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/baremetal/deploy.yaml
-  ```
-- **Helm**: cài trên node master (`helm version` v3.21.3) — dùng cho ví dụ luyện tập riêng (`lab/lab_5.4.txt`) **và** chart `k8s/helm/babymilk-shop/` deploy song song baby-milk-shop vào namespace riêng (`babymilk-helm`) để demo install/upgrade/rollback; namespace `babymilk`/prod thật vẫn do **Kustomize** quản lý chính thức.
-- **Network**: mỗi VM có 2 network adapter — NAT (ra internet) + Host-only Adapter (`192.168.56.0/24`, dùng cho giao tiếp giữa các node và từ máy host vào cluster).
-- **Vì master bị taint `control-plane:NoSchedule`**, toàn bộ app (kể cả baby-milk-shop) chỉ chạy được trên **node worker duy nhất** — ngân sách tài nguyên thực tế cho app: ~1.9 CPU / ~3.2GB RAM.
-- Không có image registry riêng — image build bằng Docker Desktop trên máy dev (Windows), sau đó `docker save` → `scp` → `ctr -n k8s.io images import` trực tiếp vào containerd của node worker.
-- Chi tiết đầy đủ quá trình dựng cluster (bao gồm các lỗi đã gặp và cách fix: VT-x, trùng IP NAT giữa 2 node, LVM chỉ cấp phát nửa đĩa...) xem tại `../work_done.md` và `../setup_guide.md` trong repo hạ tầng.
+## 7. Known limitations
 
-## Kiến trúc
+- **K8s version**: cluster hiện tại `v1.31.14` — đề bài gợi ý `v1.35.x` (cluster tự dựng riêng, không
+  phải cluster do thầy cấp; cần xác nhận với thầy version nào là bắt buộc).
+- **Namespace**: `babymilk` là tự đặt tên theo domain — cần xác nhận với thầy nếu có namespace cụ
+  thể được assign.
+- **Chỉ 1 worker node** — không test được PodAntiAffinity/HA thật giữa nhiều node, và overlay `dev`
+  đã viết xong nhưng chưa apply song song với `prod` vì không đủ tài nguyên (~1.9 CPU/3.2GB tổng).
+- **startupProbe** chưa gắn trên service thật (chỉ Recommended, không Required) — 4 service khởi
+  động nhanh (<3s) nên chưa thực sự cần; đã hiểu và demo pattern này ở `lab/lab_5.1.txt`.
+- **Helm chart chưa đồng bộ** 3 bổ sung mới nhất (LimitRange, RBAC stock-monitor, Ingress 2-path) —
+  mới chỉ có ở `k8s/base` (Kustomize, đường deploy chính thức).
+- **Load test chưa mạnh** — app hiện tại nhẹ, chưa từng chạm ngưỡng CPU 50% để thấy HPA tự scale-up
+  thật trong điều kiện tải tự nhiên (đã test scale THỦ CÔNG lên 10 replicas để verify riêng phần
+  scale — xem `lab/lab_2.3.txt` — nhưng chưa test scale TỰ ĐỘNG do tải cao thật).
+- **Ingress cần domain giả** (`babymilk.local`) — chưa có DNS nội bộ, phải gọi kèm header `Host` thủ
+  công hoặc sửa file hosts để test qua domain thật trên browser.
 
-```
-Trình duyệt ──> frontend :4000 (static + API gateway, Node thuần 0 dependency)
-                   │ proxy /api/*
-                   ├── /api/products, /api/meta ──> product-service :4001 ──┐
-                   ├── /api/auth, /api/users    ──> user-service    :4002   ├──> PostgreSQL
-                   └── /api/orders              ──> order-service   :4003 ──┘   (3 database
-                                                        │ POST /internal/checkout|restock          riêng)
-                                                        │ (X-Internal-Key, CHỈ order-service
-                                                        │  được gọi — enforce bằng CiliumNetworkPolicy L7)
-                                                        └────────> product-service (trừ/hoàn kho nguyên tử)
-```
+---
 
-- **Tech stack backend**: Node.js 22 + Express 5 + `pg` (PostgreSQL, bất đồng bộ) + JWT (`jsonwebtoken`) + scrypt (built-in `node:crypto`) — mỗi backend chỉ có **3 dependency**.
-- **Frontend**: vanilla HTML/CSS/JS SPA (hash routing), không build step. Server tĩnh kiêm gateway giúp trình duyệt chỉ gọi 1 origin → không cần CORS, và map thẳng sang Ingress khi lên K8s.
-- **Database**: PostgreSQL 16 (1 instance dùng chung, 3 database logic `babymilk_products`/`babymilk_users`/`babymilk_orders` — đúng tinh thần "database-per-service" nhưng tiết kiệm tài nguyên hơn 3 Postgres riêng biệt, phù hợp ngân sách 1 node worker). Schema tạo bằng migration SQL tự chạy khi service khởi động (`SERIAL PRIMARY KEY`, ANSI SQL).
-- **Auth**: user-service phát JWT; product/order-service tự verify bằng `JWT_SECRET` chung (stateless, không gọi chéo).
-- **Checkout**: order-service gọi `POST /internal/checkout` của product-service — kiểm tra + trừ tồn kho **nguyên tử trong 1 transaction Postgres thật** (`BEGIN` / `SELECT ... FOR UPDATE` khoá dòng chống race condition / `COMMIT`), trả về snapshot giá/tên để lưu vào đơn (không tin giá client gửi). Hủy đơn → hoàn kho. Gọi chéo có **timeout 5s**, service chết → trả 503, không crash.
-- **NetworkPolicy 2 tầng**: L3/L4 chuẩn K8s (`frontend` → `user-service`/`order-service`; 3 backend → `postgres`), và L7 HTTP-aware riêng cho `product-service` qua CiliumNetworkPolicy (path-based, phân biệt `/api/*` vs `/internal/*` dù cùng 1 port).
-- **Giỏ hàng** lưu ở localStorage phía client (nhẹ, không cần state server); đăng nhập chỉ bắt buộc lúc checkout.
-
-## Chạy trên Windows (cần Postgres local hoặc Docker)
+## 8. Cài đặt & chạy local (không qua K8s, dev nhanh)
 
 Yêu cầu: Node.js ≥ 22, và 1 PostgreSQL để kết nối (dev nhanh nhất là chạy tạm bằng Docker).
 
@@ -137,7 +210,7 @@ curl http://localhost:4000/api/products?q=meiji"&"minPrice=400000   # PowerShell
 curl -X POST http://localhost:4000/api/auth/login -H "Content-Type: application/json" -d "{\"email\":\"admin@babymilk.local\",\"password\":\"admin12345\"}"
 ```
 
-## REST API
+## 9. REST API
 
 ### product-service (qua gateway: `/api/...`)
 | Method | Path | Auth | Mô tả |
@@ -171,7 +244,7 @@ curl -X POST http://localhost:4000/api/auth/login -H "Content-Type: application/
 
 Tất cả service có `GET /healthz` (dùng cho liveness/readiness probe). Lỗi trả JSON thống nhất: `{"error": {"message": "...", "details": [...]}}`.
 
-## Biến môi trường (mỗi service có `.env.example`)
+## 10. Biến môi trường (mỗi service có `.env.example`)
 
 | Biến | Service | Ghi chú |
 |---|---|---|
@@ -184,11 +257,11 @@ Tất cả service có `GET /healthz` (dùng cho liveness/readiness probe). Lỗ
 | `PRODUCT/USER/ORDER_SERVICE_URL` | frontend | target proxy → K8s Service DNS |
 | `SEED_ON_START` | product | `false` để tắt seed |
 
-## 🚀 Đã triển khai lên K8s — cách làm lại từ đầu
+## 11. Đã triển khai lên K8s — cách làm lại từ đầu
 
 Toàn bộ quy trình dưới đây đã thực hiện thật và app đang chạy (xem mục "Trạng thái hiện tại" ở đầu file). Ghi lại đầy đủ để tái tạo khi cần (VD: sau khi xóa cluster, đổi image version...).
 
-### 1. Build image (trên máy dev, cần Docker Desktop)
+### 11.1. Build image (trên máy dev, cần Docker Desktop)
 
 ```bash
 cd baby-milk-shop
@@ -201,7 +274,9 @@ docker pull postgres:16-alpine
 
 Mỗi image backend ~58MB (`node:22-alpine`, multi-stage, non-root `USER node`; từ khi bỏ `better-sqlite3` sang `pg` — pure JS — không cần build toolchain `python3/make/g++` nữa nên image nhẹ hơn bản v1.0).
 
-### 2. Đưa image vào cluster (không có registry riêng)
+Hoặc dùng script có sẵn: `bash scripts/build.sh`
+
+### 11.2. Đưa image vào cluster (không có registry riêng)
 
 Chỉ cần đưa vào node **worker** (vì master bị taint, không nhận app pod):
 
@@ -211,7 +286,7 @@ scp babymilk-images.tar bachpt1@192.168.56.102:/tmp/
 ssh bachpt1@192.168.56.102 "sudo ctr -n k8s.io images import /tmp/babymilk-images.tar"
 ```
 
-### 3. Tạo Secret (KHÔNG commit giá trị thật lên git)
+### 11.3. Tạo Secret (KHÔNG commit giá trị thật lên git)
 
 ```bash
 cp k8s/base/02-secret.yaml.example k8s/base/02-secret.yaml
@@ -223,7 +298,7 @@ kubectl apply -f k8s/base/02-secret.yaml
 
 `k8s/base/02-secret.yaml` đã nằm trong `.gitignore` — không bao giờ push file này lên git. Secret KHÔNG nằm trong `kustomization.yaml` (áp dụng tách riêng, xem lý do ở mục Kustomize bên dưới).
 
-### 4. Cài metrics-server (bắt buộc để HPA hoạt động, không có sẵn trong kubeadm)
+### 11.4. Cài metrics-server (bắt buộc để HPA hoạt động, không có sẵn trong kubeadm)
 
 ```bash
 curl -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml -o metrics-server.yaml
@@ -232,17 +307,25 @@ curl -sL https://github.com/kubernetes-sigs/metrics-server/releases/latest/downl
 kubectl apply -f metrics-server.yaml
 ```
 
-### 5. Tạo thư mục hostPath trên worker (cho PV static provisioning)
+### 11.5. Cài ingress-nginx (bắt buộc cho Ingress)
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/baremetal/deploy.yaml
+```
+
+### 11.6. Tạo thư mục hostPath trên worker (cho PV static provisioning)
 
 ```bash
 ssh bachpt1@192.168.56.102 "sudo mkdir -p /mnt/babymilk-data/postgres && sudo chown -R 999:999 /mnt/babymilk-data/postgres"
 ```
 
-### 6. Deploy bằng Kustomize
+### 11.7. Deploy bằng Kustomize
 
 ```bash
 kubectl apply -k k8s/overlays/prod
 ```
+
+Hoặc dùng script có sẵn: `bash scripts/deploy.sh`
 
 `prod` = đúng cấu hình đang chạy thật (namespace `babymilk`, NodePort `30080`). Trước khi deploy lần đầu hoặc sau khi sửa manifest, luôn kiểm tra trước bằng:
 
@@ -251,16 +334,16 @@ kubectl kustomize k8s/overlays/prod   # render thử, xem có ra đúng YAML mon
 kubectl diff -k k8s/overlays/prod     # so sánh với cluster đang chạy TRƯỚC khi apply
 ```
 
-### 7. Kiểm tra & truy cập
+### 11.8. Kiểm tra & truy cập
 
 ```bash
-kubectl get pods -n babymilk -o wide          # 5 pod phải Running 1/1 (4 app + postgres)
+kubectl get pods -n babymilk -o wide          # 5 pod phải Running (4 app 3/3 hoặc 4/4 lúc init, postgres 1/1)
 kubectl get hpa -n babymilk                    # xem HPA đọc được metrics chưa
 kubectl get cronjob -n babymilk                 # xem CronJob stock-monitor
 curl http://192.168.56.102:30080/healthz        # test từ máy host
 ```
 
-Mở trình duyệt: **http://192.168.56.102:30080**
+Mở trình duyệt: **http://192.168.56.102:30080** — hoặc chạy `bash scripts/smoke-test.sh` để tự động hoá toàn bộ bước kiểm tra + mở trình duyệt.
 
 ### Kustomize — cấu trúc `k8s/`
 
@@ -292,18 +375,18 @@ k8s/
                                   # (chưa apply lên cluster — không đủ tài nguyên chạy song song với prod)
 ```
 
-Mỗi Deployment backend: `replicas: 1`, `imagePullPolicy: Never` (image chỉ có local trên worker, không có registry để pull), resource `requests: 50m CPU/32-64Mi RAM`, `limits: 100-150m CPU/64-256Mi RAM`, `readinessProbe`/`livenessProbe` qua `GET /healthz`. Postgres: `requests: 100m/128Mi`, `limits: 300m/384Mi`, probe bằng `pg_isready`, data mount qua PVC.
+Mỗi Deployment backend: `replicas: 1`, `imagePullPolicy: Never` (image chỉ có local trên worker, không có registry để pull), resource `requests: 50m CPU/32-64Mi RAM`, `limits: 100-150m CPU/64-256Mi RAM`, `readinessProbe`/`livenessProbe` qua `GET /healthz`. Postgres: `requests: 100m/128Mi`, `limits: 300m/384Mi`, probe bằng `pg_isready`.
 
 ### Multi-container pod pattern (init + sidecar + ambassador)
 
-Mỗi pod trong 4 Deployment app (product/user/order-service, frontend) có **4 container**:
+Xem sơ đồ Mermaid + giải thích đầy đủ tại [`docs/architecture.md`](docs/architecture.md). Tóm tắt:
 
 | Container | Vai trò | Port |
 |---|---|---|
-| `init-config` (init container) | Chạy trước, ghi tóm tắt config hiệu lực (đọc từ ConfigMap) vào `emptyDir` rồi thoát — minh hoạ init container chuẩn bị dữ liệu cho app chính | — |
+| `init-config` (init container) | Ghi tóm tắt config hiệu lực (đọc từ ConfigMap) vào `emptyDir` rồi thoát | — |
 | `<service-name>` (app chính) | Node.js app thật, KHÔNG đổi gì về logic — chỉ đổi `PORT` sang nội bộ `127.0.0.1:<gốc+100>` | 4101/4102/4103/4100 (nội bộ) |
-| `log-shipper` (sidecar) | `busybox tail -F` đọc trực tiếp file log kubelet ghi ở `/var/log/containers/<pod>_..._0.log` (mount `hostPath /var/log`, chỉ đọc) — app **vẫn ghi log ra stdout** như cũ, không phá 12-Factor #11 | — |
-| `ambassador-nginx` | nginx nhận traffic ở đúng port công khai cũ (4001/4002/4003/4000 — port Service/NetworkPolicy đã khai báo từ trước), `proxy_pass` vào app ở `127.0.0.1` | 4001/4002/4003/4000 (công khai) |
+| `log-shipper` (sidecar) | `busybox tail -F` đọc trực tiếp file log kubelet ghi ở node — app **vẫn ghi log ra stdout** như cũ, không phá 12-Factor #11 | — |
+| `ambassador-nginx` | nginx nhận traffic ở đúng port công khai cũ, `proxy_pass` vào app ở `127.0.0.1` | 4001/4002/4003/4000 (công khai) |
 
 Vì port công khai (Service `targetPort`) **giữ nguyên số cũ**, chỉ đổi container nào lắng nghe ở đó → **không cần sửa bất kỳ NetworkPolicy/CiliumNetworkPolicy nào**. `log-shipper` và `ambassador-nginx` chạy `runAsUser: 0` (root) — đánh đổi có chủ đích: log file trên node do kubelet ghi (`640 root:root`) chỉ root đọc được, và nginx image cần `chown` nội bộ lúc khởi động dù chạy root.
 
@@ -336,27 +419,64 @@ helm uninstall babymilk-demo
 kubectl delete namespace babymilk-helm
 ```
 
-Đã verify thật cả 3 thao tác trên cluster: install (5/5 pod Running, curl end-to-end qua NodePort `30081` trả đúng data), upgrade (HPA `maxPods` đổi đúng 3→5), rollback (`maxPods` trả về đúng 3). Values quan trọng trong `values.yaml`: `namespace`, `images.*` (tag từng service), `frontend.nodePort`, `hpa.maxReplicas`, `storageClassName`, `secrets.*` (đổi trước khi dùng thật).
+Values quan trọng trong `values.yaml`: `namespace`, `images.*` (tag từng service), `frontend.nodePort`, `hpa.maxReplicas`, `storageClassName`, `secrets.*` (đổi trước khi dùng thật).
 
 ### Việc có thể làm tiếp (chưa làm — ngoài phạm vi hiện tại)
 
 - [ ] `PodDisruptionBudget`.
-- [ ] Load test mạnh hơn (nhiều pod song song / công cụ như `k6`, `hey`) để thực sự quan sát HPA scale-up — app hiện tại quá nhẹ nên chưa chạm ngưỡng CPU 50% trong test thủ công (đã scale tay lên 10 replicas để test riêng phần scale, xem `lab/lab_2.3.txt`).
-- [ ] Thêm init container `wait-for-postgres` cho 3 backend — hiện tại nếu Postgres chưa sẵn sàng lúc pod backend start, pod sẽ crash rồi tự retry theo cơ chế restart mặc định của K8s (chấp nhận được, nhưng init container sẽ gọn hơn). Lưu ý: KHÔNG nhầm với `init-config` hiện có — container đó chỉ ghi tóm tắt config, không chờ Postgres.
-- [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật, và có đủ tài nguyên apply thật overlay `dev` song song với `prod`.
-- [ ] Đồng bộ Helm chart (`k8s/helm/babymilk-shop/`) với 3 bổ sung mới nhất (LimitRange, RBAC stock-monitor, Ingress 2-path) — hiện các resource này mới chỉ có ở `k8s/base` (Kustomize), chưa có trong Helm chart.
-- [x] ~~Tăng `timeoutSeconds` cho readiness/liveness probe~~ — đã fix, `timeoutSeconds: 3` cho cả 4 Deployment (Lab 3.2).
-- [x] ~~Ingress~~ — đã xong qua `ingress-nginx` (xem checklist "Trạng thái hiện tại" ở đầu file + `lab/lab_4.2.txt`).
+- [ ] Load test mạnh hơn (`k6`, `hey`) để thực sự quan sát HPA scale-up tự động do tải cao thật.
+- [ ] Thêm init container `wait-for-postgres` cho 3 backend (khác `init-config` hiện có — container đó chỉ ghi tóm tắt config, không chờ Postgres).
+- [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật, và apply thật overlay `dev` song song `prod`.
+- [ ] Đồng bộ Helm chart với 3 bổ sung mới nhất (LimitRange, RBAC stock-monitor, Ingress 2-path).
+- [ ] `startupProbe` trên workload thật (hiện chỉ demo trên pod giả lập — Recommended, không Required).
 
-## Cấu trúc thư mục
+## 12. Môi trường hạ tầng (K8s cluster)
+
+Cluster Kubernetes 2 node dựng bằng `kubeadm` trên 2 VM VirtualBox (không dùng cloud/minikube/kind):
+
+| | Node master | Node worker |
+|---|---|---|
+| VM name (VirtualBox) | `k8s_mtr` | `worker_1` |
+| Hostname trong cluster | `bachpt1` | `k8s-worker1` |
+| Vai trò | control-plane (taint `NoSchedule` — không nhận app pod) | chạy toàn bộ app workload |
+| IP (host-only network) | `192.168.56.103` | `192.168.56.102` |
+| OS | Ubuntu Server 26.04 LTS | Ubuntu Server 26.04 LTS |
+| Kubernetes | v1.31.14 | v1.31.14 |
+| Container runtime | containerd 2.2.2 | containerd 2.2.2 |
+| CPU / RAM (allocatable) | 2 core / 3.3GB | 2 core / 3.3GB |
+| Disk | 23GB (đã extend LVM từ 12GB mặc định) | 23GB (đã extend LVM từ 12GB mặc định) |
+
+- **CNI**: Cilium v1.19.3 (kèm Cilium Envoy DaemonSet) — thay cho Calico, dùng cho cả L3/L4 NetworkPolicy chuẩn K8s lẫn L7 HTTP-aware CiliumNetworkPolicy.
+- **metrics-server**: v0.8.1, cài thêm cho HPA (không có sẵn trong kubeadm), patch `--kubelet-insecure-tls` vì kubelet dùng cert tự ký.
+- **StorageClass**: `local-path` (Rancher `local-path-provisioner`) — dynamic provisioning thật, cài thêm vì cluster kubeadm không có sẵn.
+- **Ingress Controller**: `ingress-nginx` v1.15.1 (NodePort `80:30369`/`443:31810`) — cài đè lên sau khi Cilium's built-in Ingress Controller dính bug thật 2 lần (agent Cilium kẹt khi restart cùng kube-proxy trên Cilium 1.19.x — [issue #44464](https://github.com/cilium/cilium/issues/44464)). `ingress-nginx` chạy tách biệt hoàn toàn khỏi CNI agent nên không dính lại vấn đề đó.
+- **Helm**: cài trên node master (`helm version` v3.21.3) — dùng cho ví dụ luyện tập riêng (`lab/lab_5.4.txt`) **và** chart `k8s/helm/babymilk-shop/` deploy song song.
+- **Network**: mỗi VM có 2 network adapter — NAT (ra internet) + Host-only Adapter (`192.168.56.0/24`, dùng cho giao tiếp giữa các node và từ máy host vào cluster).
+- **Vì master bị taint `control-plane:NoSchedule`**, toàn bộ app chỉ chạy được trên **node worker duy nhất** — ngân sách tài nguyên thực tế cho app: ~1.9 CPU / ~3.2GB RAM.
+- Không có image registry riêng — image build bằng Docker Desktop trên máy dev (Windows), sau đó `docker save` → `scp` → `ctr -n k8s.io images import` trực tiếp vào containerd của node worker.
+- Chi tiết đầy đủ quá trình dựng cluster (bao gồm các lỗi đã gặp và cách fix: VT-x, trùng IP NAT giữa 2 node, LVM chỉ cấp phát nửa đĩa...) xem tại `../work_done.md` và `../setup_guide.md` trong repo hạ tầng.
+
+## 13. Cấu trúc thư mục
 
 ```
 baby-milk-shop/
+├── README.md                  # file này
+├── docs/
+│   ├── architecture.md        # sơ đồ Mermaid + giải thích kiến trúc
+│   └── ckad-checklist.md      # map đầy đủ §4 yêu cầu -> file/lệnh verify
 ├── package.json               # scripts: setup, dev (concurrently cả 4 service)
-├── scripts/setup.mjs          # copy .env + npm install tất cả
-├── k8s/                       # manifest K8s — apply bằng `kubectl apply -k k8s/overlays/prod`
-│   ├── base/                  # xem chi tiết ở mục "Kustomize — cấu trúc k8s/" phía trên
-│   └── overlays/{prod,dev}/
+├── scripts/
+│   ├── setup.mjs              # copy .env + npm install tất cả (dev local)
+│   ├── build.sh                # build 4 image Docker
+│   ├── deploy.sh                # apply Kustomize vào cluster
+│   └── smoke-test.sh            # SSH + verify toàn bộ capstone checklist + mở web
+├── k8s/                       # manifest K8s — xem chi tiết mục 11
+│   ├── base/
+│   ├── overlays/{prod,dev}/
+│   └── helm/babymilk-shop/    # Helm chart song song
+├── lab/                        # 20 lab CKAD đã làm thật (transcript + script tự động)
+│   ├── lab_1.1.txt ... lab_5.4.txt
+│   └── class-demo/             # bản chuẩn hoá demo trước lớp (Day1-5.md + run-dayN.sh)
 └── services/
     ├── product-service/       # :4001 — Express + PostgreSQL (products)
     │   ├── migrations/*.sql   # schema SQL (SERIAL PRIMARY KEY)
