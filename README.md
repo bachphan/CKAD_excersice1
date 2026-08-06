@@ -1,9 +1,9 @@
 # 🍼 BabyMilk Shop — Capstone Project CKAD
 
-E-commerce bán sữa bột công thức cho trẻ em, kiến trúc **4 microservice độc lập + PostgreSQL**,
-container hóa và **đang chạy thật trên cụm Kubernetes 2 node tự dựng bằng kubeadm trên VirtualBox**
-(không phải cloud, không phải minikube/kind) — không thiếu bất kỳ mục "Required" nào trong đề bài
-Capstone CKAD.
+E-commerce bán sữa bột công thức cho trẻ em, kiến trúc **5 microservice độc lập + PostgreSQL + Redis
+Pub/Sub**, container hóa và **đang chạy thật trên cụm Kubernetes 2 node tự dựng bằng kubeadm trên
+VirtualBox** (không phải cloud, không phải minikube/kind) — không thiếu bất kỳ mục "Required" nào
+trong đề bài Capstone CKAD.
 
 > 📐 **Sửa/thêm manifest K8s?** Đọc [`k8s/CONVENTIONS.md`](k8s/CONVENTIONS.md) trước — quy chuẩn bắt
 > buộc để mọi thay đổi sau này (kể cả do AI khác làm) vẫn nhất quán với phần đã có.
@@ -12,6 +12,9 @@ Capstone CKAD.
 > map từng mục D1-O5 trong đề bài tới đúng file/lệnh verify thật.
 >
 > 🖼️ **Sơ đồ kiến trúc (Mermaid)**: xem [`docs/architecture.md`](docs/architecture.md).
+>
+> 🎤 **Thuyết trình/demo trước lớp**: xem [`docs/presentation.md`](docs/presentation.md) — kịch bản
+> nói + lệnh demo trực tiếp copy-paste được, đi đúng checklist §6.3 của đề bài.
 >
 > ⚡ **Chấm bài nhanh**: chạy `scripts/smoke-test.sh` — SSH vào cluster, in bằng chứng đạt đủ yêu
 > cầu, mở web thật. Xem mục ["Chạy demo nhanh cho người chấm bài"](#-chạy-demo-nhanh-cho-người-chấm-bài) bên dưới.
