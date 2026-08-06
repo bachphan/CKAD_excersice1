@@ -1,0 +1,42 @@
+# Mặc định dynamic provisioning (local-path) — an toàn cho namespace demo/test bất kỳ.
+# Khi cutover vào namespace "babymilk" thật (giữ đúng data cũ): --set postgres.volumeName=postgres-data-pv
+# (PV static đã có sẵn từ trước, KHÔNG set postgres.createStaticPV — PV đó KHÔNG do chart này tạo).
+{{- if .Values.postgres.createStaticPV }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.postgres.volumeName }}
+spec:
+  capacity:
+    storage: {{ .Values.postgres.storageSize }}
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: {{ .Values.postgres.staticPVHostPath }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - {{ .Values.postgres.staticPVNode }}
+---
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-pvc
+  namespace: {{ .Values.namespace }}
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: {{ if .Values.postgres.volumeName }}manual{{ else }}{{ .Values.postgres.storageClassName }}{{ end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storageSize }}
+  {{- if .Values.postgres.volumeName }}
+  volumeName: {{ .Values.postgres.volumeName }}
+  {{- end }}

@@ -1,0 +1,15 @@
+namespace: babymilk
+image: docker.io/babymilk/product-service:2.3
+imagePullPolicy: Never
+
+images:
+  busybox: busybox:1.36
+  nginx: nginx:1.27-alpine
+
+replicaCount: 1
+
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilization: 50

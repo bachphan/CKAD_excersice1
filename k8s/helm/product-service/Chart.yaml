@@ -1,0 +1,9 @@
+apiVersion: v2
+name: product-service
+description: >
+  product-service của babymilk-shop — cài ĐỘC LẬP được, nhưng yêu cầu chart babymilk-infra
+  đã cài trước vào CÙNG namespace (cần ConfigMap/Secret/ambassador-nginx-conf/ResourceQuota
+  do chart đó tạo).
+type: application
+version: 1.0.0
+appVersion: "2.3"

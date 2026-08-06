@@ -1,0 +1,10 @@
+apiVersion: v2
+name: babymilk-infra
+description: >
+  Hạ tầng dùng chung cho babymilk-shop — Namespace, ConfigMap, Secret, PostgreSQL, PV/PVC,
+  NetworkPolicy (L3/L4 + L7), ResourceQuota, LimitRange, Ingress, CronJob stock-monitor + RBAC.
+  PHẢI cài chart này TRƯỚC 4 chart service (product-service/user-service/order-service/frontend) —
+  các chart đó tham chiếu ConfigMap/Secret/ambassador-nginx-conf do chart này tạo ra.
+type: application
+version: 1.0.0
+appVersion: "1.0"

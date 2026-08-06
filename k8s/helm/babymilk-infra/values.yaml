@@ -1,0 +1,39 @@
+namespace: babymilk
+
+# Đổi hết REPLACE_ME_* trước khi dùng thật (openssl rand -hex 24 cho JWT_SECRET, -hex 16 cho các
+# key còn lại) — hoặc truyền qua --set / -f values-secret.yaml (không commit).
+secrets:
+  # manage=false: chart không tạo/ghi đè Secret babymilk-secret, dùng Secret đã có sẵn trong namespace.
+  manage: true
+  jwtSecret: "REPLACE_ME_WITH_RANDOM_HEX"
+  internalApiKey: "REPLACE_ME_WITH_RANDOM_HEX"
+  adminPassword: "REPLACE_ME_WITH_STRONG_PASSWORD"
+  postgresPassword: "REPLACE_ME_WITH_RANDOM_HEX"
+
+postgres:
+  image: postgres:16-alpine
+  # Mặc định dynamic provisioning (an toàn cho namespace demo/test bất kỳ). Khi cutover vào
+  # namespace "babymilk" thật để dùng ĐÚNG data cũ: --set postgres.storageClassName=manual
+  # --set postgres.volumeName=postgres-data-pv (PV static đã có sẵn, xem k8s/base/30-pv-pvc.yaml).
+  storageClassName: local-path
+  volumeName: ""
+  storageSize: 1Gi
+  createStaticPV: false
+  staticPVHostPath: /mnt/babymilk-data/postgres
+  staticPVNode: k8s-worker1
+
+images:
+  busybox: busybox:1.36
+  kubectl: bitnami/kubectl:latest
+
+ingress:
+  host: babymilk.local
+
+resourceQuota:
+  requestsCpu: "1200m"
+  requestsMemory: "1600Mi"
+  limitsCpu: "1800m"
+  limitsMemory: "2800Mi"
+
+cronJob:
+  suspend: false

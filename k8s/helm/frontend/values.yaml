@@ -1,0 +1,10 @@
+namespace: babymilk
+image: docker.io/babymilk/frontend:1.2
+imagePullPolicy: Never
+
+images:
+  busybox: busybox:1.36
+  nginx: nginx:1.27-alpine
+
+replicaCount: 1
+nodePort: 30080

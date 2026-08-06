@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stock-monitor-sa
+  namespace: {{ .Values.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stock-monitor-role
+  namespace: {{ .Values.namespace }}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stock-monitor-binding
+  namespace: {{ .Values.namespace }}
+subjects:
+- kind: ServiceAccount
+  name: stock-monitor-sa
+  namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: stock-monitor-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stock-monitor
+  namespace: {{ .Values.namespace }}
+spec:
+  schedule: "0 8 * * *"
+  suspend: {{ .Values.cronJob.suspend }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app: stock-monitor
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: stock-monitor-sa
+          initContainers:
+          - name: check-product-service-up
+            image: {{ .Values.images.kubectl }}
+            imagePullPolicy: IfNotPresent
+            command: ["sh", "-c"]
+            args:
+              - |
+                echo "Kiểm tra product-service có Pod Running không trước khi gọi API..."
+                kubectl get pods -n {{ .Values.namespace }} -l app=product-service --field-selector=status.phase=Running -o name | grep -q pod/ || \
+                  { echo "product-service KHÔNG có Pod Running -> dừng sớm (fail-fast)"; exit 1; }
+                echo "OK — product-service đang Running, tiếp tục gọi API."
+            resources:
+              requests:
+                cpu: 20m
+                memory: 32Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+          containers:
+          - name: stock-check
+            image: {{ .Values.images.busybox }}
+            command:
+            - sh
+            - -c
+            - |
+              echo "=== Scheduled stock check $(date) ==="
+              wget -qO- http://product-service:4001/api/products?limit=100 > /tmp/products.json || exit 1
+              grep -o '"name":"[^"]*","brand":"[^"]*"[^}]*"stock":[0-9]\{1,2\}[,}]' /tmp/products.json | head -20
+              echo "=== Done ==="
+            resources:
+              requests:
+                cpu: 20m
+                memory: 16Mi
+              limits:
+                cpu: 50m
+                memory: 32Mi
