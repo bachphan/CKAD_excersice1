@@ -118,6 +118,10 @@ lúc subscriber đang restart là chấp nhận được, không cần đảm b�
 mô demo này. `order-service` KHÔNG dùng Redis cho `/readyz` — dependency phụ trợ chết không được
 làm mất readiness của luồng chính.
 
+**Giới hạn biết trước**: Redis Pub/Sub broadcast tin nhắn tới TẤT CẢ subscriber đang kết nối (khác
+queue có consumer-group như Kafka) — nếu `notification-service` chạy >1 replica, mỗi đơn hàng sẽ bị
+xử lý trùng lặp ở từng pod. Vì vậy cố định `replicaCount: 1`, không gắn HPA cho service này.
+
 Nếu mở rộng thật (nhiều đơn hàng đồng thời, cần retry bền vững, nhiều consumer hơn), bước hợp lý
 tiếp theo là chuyển Redis Pub/Sub sang message broker có persistence (RabbitMQ/Kafka) + outbox
 pattern để không mất event khi consumer down dài hạn.

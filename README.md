@@ -175,6 +175,12 @@ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:41
 - **Kustomize không còn phản ánh cluster live** kể từ khi cutover sang Helm — `kubectl diff -k
   overlays/prod` không còn `= 0` (đúng như dự kiến, xem `docs/ckad-checklist.md` mục P5). Vẫn giữ
   trong repo, render sạch, để đáp ứng yêu cầu đề bài.
+- **Redis Pub/Sub KHÔNG an toàn khi scale `notification-service` > 1 replica**: Pub/Sub broadcast
+  tin nhắn tới TẤT CẢ subscriber đang kết nối (khác hẳn queue có consumer-group như Kafka/RabbitMQ)
+  — nếu chạy 2 pod `notification-service` cùng lúc, mỗi đơn hàng sẽ bị ghi **trùng 2 lần**. Vì vậy
+  `replicaCount: 1` cố định (không gắn HPA cho service này) — biết rõ giới hạn, không phải thiếu sót.
+  Muốn scale thật thì phải đổi sang message broker có consumer-group (Kafka) hoặc work queue
+  (RabbitMQ/BullMQ trên Redis) thay vì Pub/Sub thuần.
 - **Load test chưa mạnh** — app hiện tại nhẹ, chưa từng chạm ngưỡng CPU 50% để thấy HPA tự scale-up
   thật trong điều kiện tải tự nhiên (đã test scale THỦ CÔNG lên 10 replicas để verify riêng phần
   scale — xem `lab/lab_2.3.txt` — nhưng chưa test scale TỰ ĐỘNG do tải cao thật).
@@ -185,16 +191,22 @@ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:41
 
 ## 8. Cài đặt & chạy local (không qua K8s, dev nhanh)
 
-Yêu cầu: Node.js ≥ 22, và 1 PostgreSQL để kết nối (dev nhanh nhất là chạy tạm bằng Docker).
+Yêu cầu: Node.js ≥ 22, 1 PostgreSQL để kết nối (dev nhanh nhất là chạy tạm bằng Docker), và **tuỳ
+chọn** 1 Redis nếu muốn test luồng thông báo bất đồng bộ (`order-service` → `notification-service`
+vẫn chạy được KHÔNG có Redis — publish lỗi chỉ log, không crash; `notification-service` tự retry
+kết nối, `/readyz` trả `503` cho tới khi có Redis).
 
 ```powershell
 # 0. Chạy Postgres tạm cho local dev (nếu chưa có sẵn)
 docker run -d --name babymilk-postgres-dev -e POSTGRES_PASSWORD=dev-postgres-password -e POSTGRES_USER=babymilk -p 5432:5432 postgres:16-alpine
-docker exec babymilk-postgres-dev psql -U babymilk -d postgres -c "CREATE DATABASE babymilk_products;" -c "CREATE DATABASE babymilk_users;" -c "CREATE DATABASE babymilk_orders;"
+docker exec babymilk-postgres-dev psql -U babymilk -d postgres -c "CREATE DATABASE babymilk_products;" -c "CREATE DATABASE babymilk_users;" -c "CREATE DATABASE babymilk_orders;" -c "CREATE DATABASE babymilk_notifications;"
+
+# 0b. (Tuỳ chọn) Redis cho luồng notification bất đồng bộ
+docker run -d --name babymilk-redis-dev -p 6379:6379 redis:7-alpine
 
 cd D:\CKAD\baby-milk-shop
 
-# 1. Cài đặt một lần: copy .env.example -> .env + npm install cho cả 4 service
+# 1. Cài đặt một lần: copy .env.example -> .env + npm install cho cả 5 service
 npm install
 npm run setup
 
