@@ -22,9 +22,9 @@ dính bất kỳ điều kiện fail tự động nào ở §7 — vượt yêu 
 | §4.5 Observability + docs/demo | 10 | ✅ Đủ (kể cả O3 Recommended) | Liveness/readiness probe TÁCH riêng (`/healthz`/`/readyz`), startupProbe thật, README debug runbook, API hiện hành |
 | **Tổng** | **100** | | |
 
-**2 điểm khác biệt cấu hình cần xác nhận lại với thầy** (không phải thiếu sót, chỉ khác so với đề
-bài mẫu — xem chi tiết cuối file): Kubernetes version (`v1.31.14` thay vì `v1.35.x`), namespace tự
-đặt tên `babymilk` (đề bài ghi "do thầy assign").
+**1 điểm khác biệt cấu hình cần xác nhận lại với thầy** (không phải thiếu sót — xem chi tiết cuối
+file): namespace tự đặt tên `babymilk` (đề bài ghi "do thầy assign"). Kubernetes version đã khớp
+đúng `v1.35.x` (upgrade thật từ `v1.31.14`, xem README mục "Known limitations").
 
 ---
 
@@ -119,9 +119,11 @@ bài mẫu — xem chi tiết cuối file): Kubernetes version (`v1.31.14` thay 
 | App chỉ chạy qua `docker compose`, không có K8s Deployment | ❌ Không — chạy K8s thật trên cluster kubeadm tự dựng |
 | Secret commit dạng plaintext lên git | ❌ Không — `02-secret.yaml` thật nằm trong `.gitignore`, chỉ commit `.example` |
 | Không có cả Ingress lẫn NodePort/LoadBalancer | ❌ Không — có cả 2 |
-| Không show được Pod Ready trong namespace lúc demo | ❌ Không — 5/5 Pod Running ổn định |
+| Không show được Pod Ready trong namespace lúc demo | ❌ Không — 7/7 Pod Running ổn định |
 
-## 2 điểm cần xác nhận lại với thầy (không phải lỗi, chỉ là khác biệt cấu hình)
+## 1 điểm cần xác nhận lại với thầy (không phải lỗi, chỉ là khác biệt cấu hình)
 
-- **Kubernetes version**: đề bài ghi `v1.35.x`, cluster hiện tại `v1.31.14` (kubeadm tự dựng, không phải cluster do thầy cấp).
 - **Namespace**: đề bài ghi "dedicated namespace assigned by instructor" — namespace hiện tại là `babymilk` (tự đặt tên theo domain, chưa có tên cụ thể thầy chỉ định).
+- **Kubernetes version**: đã khớp `v1.35.7` — upgrade thật bằng `kubeadm` từ `v1.31.14`, tuần tự
+  `1.31→1.32→1.33→1.34→1.35` (kubeadm không cho nhảy version), verify lại 27/27 check sau mỗi bước,
+  không mất data, không downtime dài (chỉ gián đoạn ngắn lúc drain/uncordon node duy nhất chạy app).

@@ -151,7 +151,7 @@ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:41
 
 | Thành phần | Bắt buộc | Ghi chú |
 |---|---|---|
-| Kubernetes | ✅ | `v1.31.14` (kubeadm tự dựng — xem mục 8 để biết cách dựng lại) |
+| Kubernetes | ✅ | `v1.35.7` (kubeadm tự dựng — xem mục 8 để biết cách dựng lại) |
 | CNI policy-capable | ✅ | Cilium v1.19.3 (NetworkPolicy L3/L4 + CiliumNetworkPolicy L7) |
 | Ingress Controller | ✅ | `ingress-nginx` v1.15.1 |
 | metrics-server | ✅ | Bắt buộc cho HPA, cài thêm (không có sẵn trong kubeadm) |
@@ -163,8 +163,10 @@ kubectl exec -n babymilk deploy/product-service -- wget -qO- http://localhost:41
 
 ## 7. Known limitations
 
-- **K8s version**: cluster hiện tại `v1.31.14` — đề bài gợi ý `v1.35.x` (cluster tự dựng riêng, không
-  phải cluster do thầy cấp; cần xác nhận với thầy version nào là bắt buộc).
+- **K8s version**: `v1.35.7` — khớp đúng đề bài (`v1.35.x`). Đã upgrade thật từ `v1.31.14` bằng
+  `kubeadm` (không cài lại cluster), tuần tự từng minor version `1.31→1.32→1.33→1.34→1.35` (kubeadm
+  không cho nhảy version), verify lại toàn bộ 27 check sau mỗi lần lên version — không đứt app,
+  không mất data, Cilium/ingress-nginx/Helm/HPA đều sống qua cả 4 lần upgrade.
 - **Namespace**: `babymilk` là tự đặt tên theo domain — cần xác nhận với thầy nếu có namespace cụ
   thể được assign.
 - **Chỉ 1 worker node** — không test được PodAntiAffinity/HA thật giữa nhiều node, và overlay `dev`
@@ -495,7 +497,6 @@ k8s/
 - [ ] Load test mạnh hơn (`k6`, `hey`) để thực sự quan sát HPA scale-up tự động do tải cao thật.
 - [ ] Thêm init container `wait-for-postgres` cho 3 backend (khác `init-config` hiện có — container đó chỉ ghi tóm tắt config, không chờ Postgres).
 - [ ] Thêm worker node thứ 2 để test PodAntiAffinity / HA thật, và apply thật overlay `dev` song song `prod`.
-- [ ] `startupProbe` trên workload thật (hiện chỉ demo trên pod giả lập — Recommended, không Required).
 
 ## 12. Môi trường hạ tầng (K8s cluster)
 
@@ -508,7 +509,7 @@ Cluster Kubernetes 2 node dựng bằng `kubeadm` trên 2 VM VirtualBox (không 
 | Vai trò | control-plane (taint `NoSchedule` — không nhận app pod) | chạy toàn bộ app workload |
 | IP (host-only network) | `192.168.56.103` | `192.168.56.102` |
 | OS | Ubuntu Server 26.04 LTS | Ubuntu Server 26.04 LTS |
-| Kubernetes | v1.31.14 | v1.31.14 |
+| Kubernetes | v1.35.7 | v1.35.7 |
 | Container runtime | containerd 2.2.2 | containerd 2.2.2 |
 | CPU / RAM (allocatable) | 2 core / 3.3GB | 2 core / 3.3GB |
 | Disk | 23GB (đã extend LVM từ 12GB mặc định) | 23GB (đã extend LVM từ 12GB mặc định) |
