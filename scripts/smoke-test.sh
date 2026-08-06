@@ -179,8 +179,9 @@ check "O1+O2: Liveness VÀ Readiness probe trên mọi Deployment" $([ "$LIVE_CO
 section "Trạng thái Pod hiện tại (bằng chứng trực quan)"
 # ============================================================================
 ssh_master "kubectl get pods -n babymilk -o wide" | sed 's/^/    /'
+TOTAL_PODS=$(ssh_master "kubectl get pods -n babymilk --no-headers | wc -l")
 READY_PODS=$(ssh_master "kubectl get pods -n babymilk --no-headers | awk '{split(\$2,a,\"/\"); if(a[1]==a[2]) c++} END{print c+0}'")
-check "Toàn bộ Pod trong namespace babymilk đang Ready (5/5)" $([ "$READY_PODS" = "5" ] && echo 0 || echo 1)
+check "Toàn bộ Pod trong namespace babymilk đang Ready ($READY_PODS/$TOTAL_PODS)" $([ "$READY_PODS" = "$TOTAL_PODS" ] && [ "$TOTAL_PODS" -ge 7 ] && echo 0 || echo 1)
 
 # ============================================================================
 section "Chứng minh app thật đang phục vụ (curl trực tiếp, không qua SSH)"

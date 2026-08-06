@@ -1,5 +1,8 @@
 #!/bin/bash
-# deploy.sh — Apply Kustomize (cách deploy CHÍNH THỨC) lên cluster K8s.
+# deploy.sh — Apply Kustomize lên cluster K8s.
+# LƯU Ý: Kustomize KHÔNG còn là cách deploy chính thức cho namespace babymilk live (đã cutover
+# sang Helm, xem README.md mục 11.7) — script này giữ lại để test/parity riêng (namespace khác,
+# hoặc lúc cần verify Kustomize vẫn hoạt động đúng cho yêu cầu P5).
 # Giả định: đã build+import image vào worker (scripts/build.sh + README.md mục 11.2),
 # đã tạo k8s/base/02-secret.yaml (README.md mục 11.3), metrics-server + ingress-nginx đã cài
 # (README.md mục 11.4/11.5). Chạy từ thư mục gốc repo: bash scripts/deploy.sh
@@ -23,7 +26,7 @@ echo "==> Apply Kustomize overlays/prod"
 kubectl apply -k k8s/overlays/prod
 
 echo "==> Chờ rollout tất cả Deployment"
-for d in product-service user-service order-service frontend postgres; do
+for d in product-service user-service order-service notification-service frontend postgres redis; do
   kubectl rollout status "deployment/$d" -n babymilk --timeout=120s
 done
 

@@ -25,15 +25,18 @@ postgres:
 images:
   busybox: busybox:1.36
   kubectl: bitnami/kubectl:latest
+  redis: redis:7-alpine
 
 ingress:
   host: babymilk.local
 
+# Nâng từ 1200/1600/1800/2800 lên mức này khi thêm redis + notification-service (5 workload thay
+# vì 4) — vẫn trong ngân sách thật của node worker (~1.9 CPU/3.2GB allocatable).
 resourceQuota:
-  requestsCpu: "1200m"
-  requestsMemory: "1600Mi"
-  limitsCpu: "1800m"
-  limitsMemory: "2800Mi"
+  requestsCpu: "1400m"
+  requestsMemory: "1800Mi"
+  limitsCpu: "2200m"
+  limitsMemory: "3200Mi"
 
 cronJob:
   suspend: false

@@ -63,6 +63,25 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: allow-frontend-to-notification
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: notification-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - port: 4004
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: allow-backends-to-postgres
   namespace: {{ .Values.namespace }}
 spec:
@@ -82,8 +101,33 @@ spec:
     - podSelector:
         matchLabels:
           app: order-service
+    - podSelector:
+        matchLabels:
+          app: notification-service
     ports:
     - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-order-notification-to-redis
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: order-service
+    - podSelector:
+        matchLabels:
+          app: notification-service
+    ports:
+    - port: 6379
 ---
 # product-service: KHÔNG dùng NetworkPolicy L3/L4 riêng — chỉ CiliumNetworkPolicy (L7) bên dưới
 # (Cilium cộng dồn OR nhiều policy cùng chọn 1 pod, thêm L3/L4 sẽ vô hiệu hoá giới hạn L7).
@@ -231,6 +275,12 @@ spec:
           app: order-service
     ports:
     - port: 4003
+  - to:
+    - podSelector:
+        matchLabels:
+          app: notification-service
+    ports:
+    - port: 4004
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -242,7 +292,7 @@ spec:
     matchExpressions:
     - key: app
       operator: In
-      values: ["product-service", "user-service", "order-service"]
+      values: ["product-service", "user-service", "order-service", "notification-service"]
   policyTypes:
   - Egress
   egress:
@@ -271,6 +321,31 @@ spec:
           app: product-service
     ports:
     - port: 4001
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notification-egress-to-redis
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: notification-service
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - port: 6379
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

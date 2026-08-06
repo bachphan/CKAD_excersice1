@@ -18,7 +18,18 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
 
+// /healthz = liveness THUẦN TUÝ (process sống trả lời được là đủ). /readyz = readiness THẬT — ping
+// Postgres, tách khỏi /healthz để dependency chết chỉ làm kubelet gỡ pod khỏi Service Endpoints,
+// KHÔNG restart container (liveness vẫn pass — đúng bản chất khác nhau của 2 loại probe).
 app.get('/healthz', (req, res) => res.json({ status: 'ok', service: 'product-service', version: '2.1' }));
+app.get('/readyz', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ready' });
+  } catch (e) {
+    res.status(503).json({ status: 'not-ready', reason: e.message });
+  }
+});
 app.use('/api', productsRouter);
 app.use('/internal', internalRouter);
 

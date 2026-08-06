@@ -4,6 +4,7 @@ import { requireAuth, requireAdmin } from '../lib/auth.js';
 import { validateBody, intParam } from '../lib/validate.js';
 import { ApiError } from '../lib/errors.js';
 import { checkoutStock, restock } from '../productClient.js';
+import { publishOrderCompleted } from '../eventPublisher.js';
 
 const router = Router();
 
@@ -107,7 +108,10 @@ router.post('/', requireAuth, async (req, res) => {
     await restock(items);
     throw e;
   }
-  res.status(201).json(await loadOrder(orderId));
+  const created = await loadOrder(orderId);
+  // Fire-and-forget — KHÔNG await chặn response: chậm/lỗi Redis không được làm chậm checkout.
+  publishOrderCompleted(created);
+  res.status(201).json(created);
 });
 
 // GET /api/orders/mine — lịch sử đơn của user đang đăng nhập

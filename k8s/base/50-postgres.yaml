@@ -10,7 +10,7 @@ data:
   init-databases.sh: |
     #!/bin/bash
     set -e
-    for db in babymilk_products babymilk_users babymilk_orders; do
+    for db in babymilk_products babymilk_users babymilk_orders babymilk_notifications; do
       psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
         CREATE DATABASE $db;
     EOSQL

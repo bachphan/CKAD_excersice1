@@ -14,6 +14,7 @@ const TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 10000);
 const PRODUCT = (process.env.PRODUCT_SERVICE_URL || 'http://localhost:4001').replace(/\/+$/, '');
 const USER = (process.env.USER_SERVICE_URL || 'http://localhost:4002').replace(/\/+$/, '');
 const ORDER = (process.env.ORDER_SERVICE_URL || 'http://localhost:4003').replace(/\/+$/, '');
+const NOTIFICATION = (process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:4004').replace(/\/+$/, '');
 
 // Prefix dài hơn phải đứng trước nếu trùng nhau — ở đây các prefix không giao nhau.
 const UPSTREAMS = [
@@ -22,6 +23,7 @@ const UPSTREAMS = [
   ['/api/auth', USER],
   ['/api/users', USER],
   ['/api/orders', ORDER],
+  ['/api/notifications', NOTIFICATION],
 ];
 
 const MIME = {
@@ -91,6 +93,9 @@ const server = http.createServer((req, res) => {
     return sendJson(res, 400, { error: { message: 'Bad request' } });
   }
   if (pathname === '/healthz') return sendJson(res, 200, { status: 'ok', service: 'frontend' });
+  // frontend không có dependency nào cần "sẵn sàng" riêng (static file + proxy stateless) — /readyz
+  // tách khỏi /healthz chỉ để nhất quán API contract với 4 service kia, hành vi thực tế giống nhau.
+  if (pathname === '/readyz') return sendJson(res, 200, { status: 'ready' });
 
   const upstream = UPSTREAMS.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + '/'));
   if (upstream) return proxy(req, res, upstream[1]);

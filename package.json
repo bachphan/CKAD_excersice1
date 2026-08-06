@@ -2,13 +2,14 @@
   "name": "baby-milk-shop",
   "private": true,
   "version": "1.0.0",
-  "description": "Baby milk e-commerce demo — 4 microservices (product/user/order/frontend), SQLite, chạy native trên Windows, containerize sau",
+  "description": "Baby milk e-commerce demo — 5 microservices (product/user/order/notification/frontend), PostgreSQL + Redis Pub/Sub, chạy trên Kubernetes",
   "scripts": {
     "setup": "node scripts/setup.mjs",
-    "dev": "concurrently -k -n product,user,order,web -c blue,green,yellow,magenta \"npm:dev:product\" \"npm:dev:user\" \"npm:dev:order\" \"npm:dev:web\"",
+    "dev": "concurrently -k -n product,user,order,notify,web -c blue,green,yellow,cyan,magenta \"npm:dev:product\" \"npm:dev:user\" \"npm:dev:order\" \"npm:dev:notification\" \"npm:dev:web\"",
     "dev:product": "npm --prefix services/product-service run dev",
     "dev:user": "npm --prefix services/user-service run dev",
     "dev:order": "npm --prefix services/order-service run dev",
+    "dev:notification": "npm --prefix services/notification-service run dev",
     "dev:web": "npm --prefix services/frontend run dev"
   },
   "devDependencies": {

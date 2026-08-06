@@ -60,7 +60,7 @@ spec:
           mountPath: /init-config
       containers:
       - name: order-service
-        image: docker.io/babymilk/order-service:2.1
+        image: docker.io/babymilk/order-service:2.2
         imagePullPolicy: Never
         securityContext:
           readOnlyRootFilesystem: true
@@ -118,6 +118,21 @@ spec:
             secretKeyRef:
               name: babymilk-secret
               key: INTERNAL_API_KEY
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_PORT
+        - name: REDIS_CHANNEL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_CHANNEL
         resources:
           requests:
             cpu: 50m
@@ -127,7 +142,7 @@ spec:
             memory: 256Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 4103
           initialDelaySeconds: 3
           periodSeconds: 5

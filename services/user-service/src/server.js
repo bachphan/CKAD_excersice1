@@ -16,7 +16,17 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '50kb' }));
 
+// /healthz = liveness THUẦN TUÝ. /readyz = readiness THẬT (ping Postgres) — xem giải thích ở
+// product-service/src/server.js.
 app.get('/healthz', (req, res) => res.json({ status: 'ok', service: 'user-service' }));
+app.get('/readyz', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ready' });
+  } catch (e) {
+    res.status(503).json({ status: 'not-ready', reason: e.message });
+  }
+});
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 

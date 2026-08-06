@@ -1,0 +1,9 @@
+apiVersion: v2
+name: notification-service
+description: >
+  notification-service của babymilk-shop — cài ĐỘC LẬP được, nhưng yêu cầu chart babymilk-infra
+  đã cài trước vào CÙNG namespace (ConfigMap/Secret/Redis/Postgres). Subscribe Redis Pub/Sub
+  channel "order.completed" do order-service publish sau checkout.
+type: application
+version: 1.0.0
+appVersion: "1.0"

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const services = ['product-service', 'user-service', 'order-service', 'frontend'];
+const services = ['product-service', 'user-service', 'order-service', 'notification-service', 'frontend'];
 
 for (const svc of services) {
   const dir = path.join(root, 'services', svc);

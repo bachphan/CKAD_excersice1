@@ -44,11 +44,12 @@ k8s/
 │   ├── 01-configmap.yaml
 │   ├── 02-secret.yaml.example    # mẫu — 02-secret.yaml thật KHÔNG commit, xem mục 6
 │   ├── 05-ambassador-nginx-config.yaml
-│   ├── 10/11/12/13-*.yaml        # 4 Deployment app (mỗi cái = Deployment + Service)
+│   ├── 10/11/12/13/14-*.yaml     # 5 Deployment app (mỗi cái = Deployment + Service)
 │   ├── 20/21-networkpolicy*.yaml
 │   ├── 30-pv-pvc.yaml
 │   ├── 40-hpa.yaml
 │   ├── 50-postgres.yaml
+│   ├── 51-redis.yaml             # message bus Pub/Sub, không PVC
 │   ├── 60/61-stock-monitor*.yaml # CronJob + RBAC
 │   ├── 70-resourcequota.yaml
 │   ├── 71-limitrange.yaml
@@ -57,11 +58,12 @@ k8s/
 │   ├── prod/kustomization.yaml   # resources: [../../base], KHÔNG patch gì
 │   └── dev/kustomization.yaml    # namespace/NodePort/HPA riêng — CHƯA apply lên cluster
 │       # (không đủ tài nguyên chạy 2 bộ song song, chỉ dùng để validate render)
-└── helm/                         # 5 chart Helm ĐỘC LẬP — cách deploy CHÍNH THỨC, xem mục 9
-    ├── babymilk-infra/           # namespace/config/secret/postgres/PVC/quota/networkpolicy/ingress/cronjob
-    ├── product-service/          # cài/nâng cấp độc lập, không đụng 3 chart service còn lại
+└── helm/                         # 6 chart Helm ĐỘC LẬP — cách deploy CHÍNH THỨC, xem mục 9
+    ├── babymilk-infra/           # namespace/config/secret/postgres/redis/PVC/quota/networkpolicy/ingress/cronjob
+    ├── product-service/          # cài/nâng cấp độc lập, không đụng chart service khác
     ├── user-service/
     ├── order-service/
+    ├── notification-service/     # subscribe Redis Pub/Sub "order.completed", startupProbe thật
     └── frontend/
 ```
 
@@ -118,6 +120,7 @@ pattern +1 từ order-service):
 | product-service | 4001 | 4101 |
 | user-service | 4002 | 4102 |
 | order-service | 4003 | 4103 |
+| notification-service | 4004 | 4104 |
 | frontend | 4000 (NodePort 30080) | 4100 |
 
 **Vì sao port công khai giữ nguyên số cũ**: NetworkPolicy/CiliumNetworkPolicy chỉ biết pod IP + port,
@@ -229,9 +232,18 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
 
 ## 8. Probes, Labels, NetworkPolicy — quy ước ngắn
 
-- **readinessProbe + livenessProbe**: mọi app chính dùng `httpGet: {path: /healthz, port: <port nội
-  bộ>}`, `timeoutSeconds: 3` (bắt buộc — mặc định 1s từng gây probe fail giả trên node chậm, xem
-  Lab 3.2). Postgres dùng `exec: pg_isready`.
+- **livenessProbe**: `httpGet: {path: /healthz, port: <port nội bộ>}` — THUẦN TUÝ xác nhận process
+  còn sống, KHÔNG check dependency (DB/Redis) bên trong. Postgres/Redis dùng `exec: pg_isready` /
+  `redis-cli ping`.
+- **readinessProbe**: `httpGet: {path: /readyz, port: <port nội bộ>}` — THẬT SỰ ping dependency
+  (Postgres, + Redis với `notification-service`). Tách 2 path để dependency chết chỉ gỡ pod khỏi
+  Service Endpoints (readiness fail), KHÔNG làm kubelet restart container (liveness vẫn pass) —
+  tránh crash-loop dây chuyền khi 1 dependency phụ (vd Redis) tạm chết.
+- Cả 2 probe: `timeoutSeconds: 3` (bắt buộc — mặc định 1s từng gây probe fail giả trên node chậm,
+  xem Lab 3.2).
+- **startupProbe**: chỉ thêm khi có lý do THẬT (service phụ thuộc nhiều dependency lúc boot, khởi
+  động chậm) — không thêm tràn lan cho service khởi động nhanh (<3s). Ví dụ thật:
+  `notification-service` (chờ Postgres migration + Redis connect).
 - **Labels bắt buộc trên pod template**: `app: <tên>` (dùng cho Service selector), `tier:
   frontend|backend|database` (dùng cho NetworkPolicy `matchExpressions`).
 - **Label demo/lab**: mọi resource tạo ra để demo/test (không phải permanent) PHẢI gắn
@@ -258,19 +270,20 @@ bằng `kubectl describe resourcequota babymilk-quota -n babymilk` sau khi apply
 
 ## 9. Helm chart (`k8s/helm/*`) — cách deploy CHÍNH THỨC cho `babymilk` prod thật
 
-5 chart độc lập, cài/nâng cấp/rollback riêng lẻ, KHÔNG dùng Helm chart dependency/library chart —
+6 chart độc lập, cài/nâng cấp/rollback riêng lẻ, KHÔNG dùng Helm chart dependency/library chart —
 mỗi service chart tham chiếu ConfigMap/Secret/ambassador-conf của `babymilk-infra` bằng TÊN CỐ ĐỊNH
 (`babymilk-config`, `babymilk-secret`, `ambassador-nginx-conf`), không phải bằng Helm dependency:
 
 | Chart | Release live | Quản lý |
 |---|---|---|
-| `k8s/helm/babymilk-infra/` | `babymilk-infra` | Namespace, ConfigMap, Secret (tuỳ chọn), Postgres+PVC/PV, ResourceQuota+LimitRange, NetworkPolicy (L3/L4+L7), Ingress, CronJob+RBAC |
+| `k8s/helm/babymilk-infra/` | `babymilk-infra` | Namespace, ConfigMap, Secret (tuỳ chọn), Postgres+Redis+PVC/PV, ResourceQuota+LimitRange, NetworkPolicy (L3/L4+L7), Ingress, CronJob+RBAC |
 | `k8s/helm/product-service/` | `product-service-live` | Deployment 4-container + Service + HPA |
 | `k8s/helm/user-service/` | `user-service-live` | Deployment 4-container + Service |
-| `k8s/helm/order-service/` | `order-service-live` | Deployment 4-container + Service |
+| `k8s/helm/order-service/` | `order-service-live` | Deployment 4-container + Service (PUBLISH Redis) |
+| `k8s/helm/notification-service/` | `notification-service-live` | Deployment 4-container + Service (SUBSCRIBE Redis, startupProbe) |
 | `k8s/helm/frontend/` | `frontend-live` | Deployment 4-container + Service NodePort |
 
-**Thứ tự bắt buộc**: `babymilk-infra` PHẢI cài trước 4 chart service (chúng tham chiếu ConfigMap/
+**Thứ tự bắt buộc**: `babymilk-infra` PHẢI cài trước các chart service (chúng tham chiếu ConfigMap/
 Secret do `babymilk-infra` tạo). Release metadata Helm nằm ở namespace `default` (namespace hiện
 tại của context `kubectl`/`helm` trên master) — **khác** với `--set namespace=babymilk` (namespace
 chứa resource K8s thật) — 2 khái niệm độc lập, đừng nhầm.
@@ -319,8 +332,8 @@ chứa resource K8s thật) — 2 khái niệm độc lập, đừng nhầm.
 1. `helm upgrade <release>-live k8s/helm/<chart> --set namespace=babymilk --reuse-values` chạy
    không lỗi (chỉ upgrade ĐÚNG chart bị đổi).
 2. `kubectl rollout status deployment/<tên> -n babymilk --timeout=90s` → thành công.
-3. `kubectl get pods -n babymilk` → đúng số container Ready (vd `3/3` cho 4 Deployment app, `1/1`
-   cho postgres) — KHÔNG chỉ nhìn `Running`, phải nhìn tỉ lệ Ready/Total. Xác nhận 4 chart/release
+3. `kubectl get pods -n babymilk` → đúng số container Ready (vd `3/3` cho 5 Deployment app, `1/1`
+   cho postgres/redis) — KHÔNG chỉ nhìn `Running`, phải nhìn tỉ lệ Ready/Total. Xác nhận 4 chart/release
    KHÔNG bị đổi không có timestamp/restart count mới (chứng minh upgrade độc lập thật sự).
 4. `kubectl logs <pod> -c <container>` cho TỪNG container mới thêm/sửa — xác nhận không có lỗi.
 5. `curl` qua NodePort thật (`http://192.168.56.102:30080/...`) — xác nhận luồng end-to-end, không

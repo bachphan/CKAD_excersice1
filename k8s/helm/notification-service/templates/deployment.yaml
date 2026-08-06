@@ -1,0 +1,226 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+        tier: backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: init-config
+        image: {{ .Values.images.busybox }}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        command: ["sh", "-c"]
+        args:
+          - |
+            echo "== notification-service effective config ==" > /init-config/summary.txt
+            echo "PGHOST=$PGHOST" >> /init-config/summary.txt
+            echo "PGPORT=$PGPORT" >> /init-config/summary.txt
+            echo "PGDATABASE=babymilk_notifications" >> /init-config/summary.txt
+            echo "REDIS_HOST=$REDIS_HOST" >> /init-config/summary.txt
+            cat /init-config/summary.txt
+        env:
+        - name: PGHOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGHOST
+        - name: PGPORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGPORT
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_HOST
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        volumeMounts:
+        - name: init-config-data
+          mountPath: /init-config
+      containers:
+      - name: notification-service
+        image: {{ .Values.image }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        ports:
+        - containerPort: 4104
+        volumeMounts:
+        - name: init-config-data
+          mountPath: /init-config
+          readOnly: true
+        env:
+        - name: PORT
+          value: "4104"
+        - name: PGHOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGHOST
+        - name: PGPORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGPORT
+        - name: PGUSER
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: PGUSER
+        - name: PGDATABASE
+          value: "babymilk_notifications"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: POSTGRES_PASSWORD
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: babymilk-secret
+              key: JWT_SECRET
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_PORT
+        - name: REDIS_CHANNEL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: REDIS_CHANNEL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 150m
+            memory: 256Mi
+        # startupProbe THẬT — service phụ thuộc CẢ Postgres (migration lúc boot) LẪN Redis
+        # (subscribe channel) trước khi sẵn sàng; cho tối đa ~60s trước khi liveness bắt đầu tính.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 4104
+          failureThreshold: 30
+          periodSeconds: 2
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 4104
+          initialDelaySeconds: 3
+          periodSeconds: 5
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 4104
+          periodSeconds: 10
+          timeoutSeconds: 3
+      - name: log-shipper
+        image: {{ .Values.images.busybox }}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        command: ["sh", "-c"]
+        args:
+          - |
+            until ls /var/log/containers/${POD_NAME}_{{ .Values.namespace }}_notification-service-*.log 1>/dev/null 2>&1; do sleep 2; done
+            exec tail -F /var/log/containers/${POD_NAME}_{{ .Values.namespace }}_notification-service-*.log
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+      - name: ambassador-nginx
+        image: {{ .Values.images.nginx }}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+        ports:
+        - containerPort: 4004
+        volumeMounts:
+        - name: ambassador-conf
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: notification-service.conf
+        resources:
+          requests:
+            cpu: 20m
+            memory: 16Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+      volumes:
+      - name: init-config-data
+        emptyDir: {}
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: ambassador-conf
+        configMap:
+          name: ambassador-nginx-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    app: notification-service
+  ports:
+  - port: 4004
+    targetPort: 4004

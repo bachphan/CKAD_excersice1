@@ -53,6 +53,11 @@ spec:
             configMapKeyRef:
               name: babymilk-config
               key: ORDER_SERVICE_URL
+        - name: NOTIFICATION_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: NOTIFICATION_SERVICE_URL
         resources:
           requests:
             cpu: 10m
@@ -96,6 +101,11 @@ spec:
             configMapKeyRef:
               name: babymilk-config
               key: ORDER_SERVICE_URL
+        - name: NOTIFICATION_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: babymilk-config
+              key: NOTIFICATION_SERVICE_URL
         - name: UPSTREAM_TIMEOUT_MS
           valueFrom:
             configMapKeyRef:
@@ -110,7 +120,7 @@ spec:
             memory: 64Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 4100
           initialDelaySeconds: 3
           periodSeconds: 5

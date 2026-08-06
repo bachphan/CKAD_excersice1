@@ -11,11 +11,13 @@ resources:
   - 11-user-service.yaml
   - 12-order-service.yaml
   - 13-frontend.yaml
+  - 14-notification-service.yaml
   - 20-networkpolicy.yaml
   - 21-networkpolicy-egress.yaml
   - 30-pv-pvc.yaml
   - 40-hpa.yaml
   - 50-postgres.yaml
+  - 51-redis.yaml
   - 60-stock-monitor.yaml
   - 61-stock-monitor-rbac.yaml
   - 70-resourcequota.yaml

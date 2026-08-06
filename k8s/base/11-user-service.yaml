@@ -60,7 +60,7 @@ spec:
           mountPath: /init-config
       containers:
       - name: user-service
-        image: docker.io/babymilk/user-service:2.1
+        image: docker.io/babymilk/user-service:2.2
         imagePullPolicy: Never
         securityContext:
           readOnlyRootFilesystem: true
@@ -127,7 +127,7 @@ spec:
             memory: 256Mi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 4102
           initialDelaySeconds: 3
           periodSeconds: 5

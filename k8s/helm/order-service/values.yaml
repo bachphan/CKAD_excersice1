@@ -1,5 +1,5 @@
 namespace: babymilk
-image: docker.io/babymilk/order-service:2.1
+image: docker.io/babymilk/order-service:2.2
 imagePullPolicy: Never
 
 images:

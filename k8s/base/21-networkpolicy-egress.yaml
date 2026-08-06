@@ -67,8 +67,14 @@ spec:
           app: order-service
     ports:
     - port: 4003
+  - to:
+    - podSelector:
+        matchLabels:
+          app: notification-service
+    ports:
+    - port: 4004
 ---
-# 3 backend: chỉ được gọi ra Postgres — KHÔNG được gọi ra internet (0.0.0.0/0)
+# 4 backend: chỉ được gọi ra Postgres — KHÔNG được gọi ra internet (0.0.0.0/0)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -79,7 +85,7 @@ spec:
     matchExpressions:
     - key: app
       operator: In
-      values: ["product-service", "user-service", "order-service"]
+      values: ["product-service", "user-service", "order-service", "notification-service"]
   policyTypes:
   - Egress
   egress:
@@ -90,7 +96,8 @@ spec:
     ports:
     - port: 5432
 ---
-# order-service: thêm quyền gọi sang product-service (/internal/checkout|restock)
+# order-service: thêm quyền gọi sang product-service (/internal/checkout|restock) VÀ Redis
+# (publish "order.completed" sau checkout — best-effort, xem eventPublisher.js)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -109,6 +116,33 @@ spec:
           app: product-service
     ports:
     - port: 4001
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - port: 6379
+---
+# notification-service: chỉ được gọi ra Redis (subscribe) — Postgres đã mở ở
+# allow-backends-egress-to-postgres phía trên.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notification-egress-to-redis
+  namespace: babymilk
+spec:
+  podSelector:
+    matchLabels:
+      app: notification-service
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - port: 6379
 ---
 # stock-monitor (CronJob): chỉ được gọi sang product-service, không ra internet.
 # (Egress tới kube-apiserver cho init container RBAC nằm riêng ở CiliumNetworkPolicy —
